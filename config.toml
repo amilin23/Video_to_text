@@ -94,6 +94,11 @@ segment = 5
 # Show the video window. false = just print the results.
 display = true
 
+# The window is shrunk to fit this width (and a 16:9 height) so the text stays
+# on screen for large videos. Only affects the window, not what is sent to Qwen.
+# 0 = show at the video's original size.
+window_width = 1280
+
 # Save every result as a JSON line to this file. "" = off.
 log = ""
 

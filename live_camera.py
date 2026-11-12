@@ -78,6 +78,7 @@ DEFAULTS: dict[str, Any] = {
     "log": None,
     "srt": None,
     "display": True,
+    "window_width": 1280,
     "max_runtime": 0.0,
 }
 # Settings that can also come from environment variables / .env.
@@ -210,6 +211,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--srt", help="video files only: also save the descriptions as a subtitle file "
                                  "you can play alongside the video (e.g. in VLC)")
     p.add_argument("--display", action=on_off, help="show the video window (--no-display: print only)")
+    p.add_argument("--window-width", type=int,
+                   help="shrink the window to fit this width (and 16:9 height); 0 = original size")
     p.add_argument("--max-runtime", type=float,
                    help="live mode: stop after this many seconds (0 = run until you quit)")
     p.set_defaults(**settings)
@@ -403,6 +406,19 @@ def draw_overlay(frame: np.ndarray, analysis: Analysis | None, status: str,
     cv2.putText(frame, status, (8, th + 6), font, 0.5, status_color, 1, cv2.LINE_AA)
 
 
+def fit_for_display(frame: np.ndarray, max_width: int) -> np.ndarray:
+    """Return a copy of the frame shrunk to fit a max_width x (max_width * 9/16) window.
+
+    Only the window uses this; the frames sent to the model are not affected.
+    """
+    h, w = frame.shape[:2]
+    if max_width > 0:
+        scale = min(max_width / w, (max_width * 9 / 16) / h)
+        if scale < 1:
+            return cv2.resize(frame, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
+    return frame.copy()
+
+
 def quit_pressed(delay_ms: int = 1) -> bool:
     return (cv2.waitKey(delay_ms) & 0xFF) in (ord("q"), 27)
 
@@ -497,6 +513,7 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
                 if video_pos is not None:
                     status = f"{fmt_time(video_pos)}  " + status
                 status += f"  |  auto {'on' if auto else 'off'}  [space] analyse  [a] auto  [q] quit"
+                display = fit_for_display(display, args.window_width)
                 draw_overlay(display, current, status, color)
                 cv2.imshow(WINDOW, display)
                 key = cv2.waitKey(1) & 0xFF
@@ -583,6 +600,8 @@ def run_full(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
     worker = AnalysisWorker(client)
     show = args.display
     previous: str | None = None
+    # The latest answer, kept on screen (over its own frame) while the next segment is analysed.
+    shown: tuple[np.ndarray, Analysis, str] | None = None
     started = time.monotonic()
 
     try:
@@ -596,9 +615,15 @@ def run_full(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
                 worker.submit(frames, span, previous, None)
                 while worker.busy:
                     if show:
-                        view = frames[-1].copy()
-                        draw_overlay(view, None, f"{label}  segment {progress}  Analysing...", (0, 255, 255),
-                                     placeholder="Analysing this part of the video...")
+                        if shown is not None:
+                            base, shown_item, shown_label = shown
+                            view = base.copy()
+                            draw_overlay(view, shown_item,
+                                         f"{shown_label}  |  analysing {label} ({progress})...", (0, 255, 255))
+                        else:
+                            view = fit_for_display(frames[-1], args.window_width)
+                            draw_overlay(view, None, f"{label}  segment {progress}  Analysing...", (0, 255, 255),
+                                         placeholder="Analysing this part of the video...")
                         cv2.imshow(WINDOW, view)
                         if quit_pressed(30):
                             print("Stopped. The request in progress is discarded.", flush=True)
@@ -615,7 +640,9 @@ def run_full(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
                 results.add(item, seg_start, seg_end, srt_end=seg_end)
                 previous = item.description if args.use_previous else None
                 if show:
-                    view = frames[-1].copy()
+                    base = fit_for_display(frames[-1], args.window_width)
+                    shown = (base, item, label)
+                    view = base.copy()
                     draw_overlay(view, item, f"{label}  segment {progress}  {item.latency_s:.1f}s", (0, 255, 0))
                     cv2.imshow(WINDOW, view)
                     if quit_pressed(1):
