@@ -43,7 +43,7 @@ vllm serve Qwen/Qwen3.8-27B --port 8000
 If vLLM complains about the number of images per prompt, add
 `--limit-mm-per-prompt '{"image": 4}'`.
 
-## 3. Start the camera
+## 3. Start the camera (or see *Video files* below)
 
 ```bash
 python live_camera.py
@@ -57,17 +57,57 @@ python live_camera.py --base-url http://localhost:8000/v1 --model Qwen/Qwen3.8-2
 
 Keys: **space** analyse now · **a** toggle automatic analysis · **q** quit.
 
+## Video files
+
+### Play and sample (like the camera)
+
+```bash
+python live_camera.py --source my_video.mp4
+```
+
+The video plays at normal speed and a short burst is analysed every few
+seconds. Results show the **position in the video**, e.g. `[1:05-1:06]`. Parts
+of the video between analyses are not looked at.
+
+### Analyse the whole video (`--full`)
+
+```bash
+python live_camera.py --source my_video.mp4 --full --srt my_video.srt --log my_video.jsonl
+```
+
+The video is split into back-to-back segments (`--segment`, 5 s by default)
+and every segment is analysed in order, so nothing is skipped. It runs as fast
+as the model answers, not at playback speed: a 10-minute video is 120 segments,
+so at ~7 s per answer it takes about 14 minutes.
+
+```
+[0:00-0:05] (6.3s) Objects: menu panel, PLAY, OPTIONS
+            The main menu is shown and the highlight moves from QUIT to PLAY.
+[0:05-0:10] (7.1s) Objects: ...
+```
+
+### Check accuracy with subtitles (`--srt`)
+
+`--srt file.srt` saves every description as a subtitle at the right time. Open
+the video in VLC (or most players) and add the subtitle file
+(Subtitle > Add Subtitle File...), or give it the same name as the video. You
+then see each description while the matching part of the video plays, which
+makes it easy to spot mistakes.
+
 ## Useful options
 
 | Option | Default | What it does |
 |---|---|---|
 | `--source` | `0` | Camera index, or a video file / stream URL |
-| `--interval` | `3` | Seconds to wait after each answer before the next one (`0` = only on space) |
+| `--full` | off | Video files: analyse every segment of the whole video |
+| `--segment` | `5` | `--full`: seconds per analysed segment |
+| `--interval` | `3` | Live: seconds to wait after each answer before the next one (`0` = only on space) |
 | `--frames` | `4` | Frames sent per analysis |
-| `--frame-gap` | `0.5` | Seconds between those frames |
+| `--frame-gap` | `0.5` | Live: seconds between those frames |
 | `--max-side` | `640` | Frames are downscaled to this size before sending (smaller = faster) |
 | `--yolo [weights]` | off | Also draw YOLO boxes live and pass its labels to Qwen as hints (`pip install ultralytics`, AGPL-3.0) |
-| `--log out.jsonl` | off | Save every result as a JSON line |
+| `--log out.jsonl` | off | Save every result as a JSON line (with video times for files) |
+| `--srt out.srt` | off | Video files: save descriptions as subtitles |
 | `--no-display` | off | No window, just print results |
 | `--extra-body JSON` | none | Extra request fields, e.g. turn off thinking on vLLM: `'{"chat_template_kwargs": {"enable_thinking": false}}'` |
 
