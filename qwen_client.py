@@ -94,6 +94,8 @@ class QwenClient:
         temperature: float = 0.2,
         timeout_s: float = 120,
         extra_body: dict[str, Any] | None = None,
+        system_prompt: str = SYSTEM_PROMPT,
+        jpeg_quality: int = 80,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -102,6 +104,8 @@ class QwenClient:
         self.temperature = temperature
         self.timeout_s = timeout_s
         self.extra_body = extra_body or {}
+        self.system_prompt = system_prompt
+        self.jpeg_quality = jpeg_quality
         self.session = requests.Session()
         if api_key:
             self.session.headers["Authorization"] = f"Bearer {api_key}"
@@ -149,14 +153,14 @@ class QwenClient:
         content: list[dict[str, Any]] = [{"type": "text", "text": intro}]
         for frame in frames:
             content.append(
-                {"type": "image_url", "image_url": {"url": encode_frame(frame, self.max_side)}}
+                {"type": "image_url", "image_url": {"url": encode_frame(frame, self.max_side, self.jpeg_quality)}}
             )
         content.append({"type": "text", "text": RESPONSE_FORMAT})
 
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": content},
             ],
             "max_tokens": self.max_tokens,

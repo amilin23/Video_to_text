@@ -39,6 +39,17 @@ def test_segments_cover_whole_video_without_gaps(tmp_path):
     assert [len(f) for _, _, f in segments] == [4, 4, 2]
 
 
+def test_last_segment_never_ends_after_the_video(tmp_path):
+    # All 3 sample points of the last segment (10-15 s) fall before the end (14.5 s).
+    video = tmp_path / "clip.avi"
+    make_video(video, seconds=14.5, fps=10)
+    cap = cv2.VideoCapture(str(video))
+    segments = list(read_segments(cap, segment_s=5, n_frames=3))
+    cap.release()
+    assert len(segments) == 3
+    assert abs(segments[-1][1] - 14.5) < 0.01
+
+
 def test_srt_file(tmp_path):
     srt = tmp_path / "out.srt"
     results = Results("m", None, str(srt))

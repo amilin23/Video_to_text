@@ -94,7 +94,10 @@ the video in VLC (or most players) and add the subtitle file
 then see each description while the matching part of the video plays, which
 makes it easy to spot mistakes.
 
-## Useful options
+## Command-line options
+
+Each one matches a setting in `config.toml` (`--frame-gap` = `frame_gap`).
+
 
 | Option | Default | What it does |
 |---|---|---|
@@ -111,9 +114,29 @@ makes it easy to spot mistakes.
 | `--no-display` | off | No window, just print results |
 | `--extra-body JSON` | none | Extra request fields, e.g. turn off thinking on vLLM: `'{"chat_template_kwargs": {"enable_thinking": false}}'` |
 
-## API key and settings (`.env`)
+## Settings (`config.toml`)
 
-Copy the template and fill it in:
+All settings are in **`config.toml`**, with a comment explaining each one.
+Edit the values, save, and run `python live_camera.py`. For example, to
+analyse a whole video file with 2 frames per 10-second segment:
+
+```toml
+source = 'C:\videos\clip.mp4'   # single quotes for Windows paths
+full = true
+frames = 2
+segment = 10
+srt = "clip.srt"
+```
+
+Any command-line option overrides the file for that run only, e.g.
+`python live_camera.py --frames 6`. Use `--config other.toml` to switch
+between saved setups. At startup the app prints which config file it loaded.
+
+The order of priority is: command line > `config.toml` > environment / `.env` > built-in defaults.
+
+## API key (`.env`)
+
+The key does **not** go in `config.toml`. Copy the template and fill it in:
 
 ```bash
 cp .env.example .env
@@ -121,14 +144,10 @@ cp .env.example .env
 
 ```
 QWEN_API_KEY=your-key-here
-QWEN_BASE_URL=https://your-provider/v1
-QWEN_MODEL=your-model-name
 ```
 
-The app loads `.env` automatically from the folder you run it in (or the
-project folder). `.env` is in `.gitignore`, so your key is never committed.
-Variables already set in your terminal, and command-line options, take priority
-over the file. For a local Ollama / vLLM server you can leave `QWEN_API_KEY` empty.
+The app loads `.env` automatically. `.env` is in `.gitignore`, so your key is
+never committed. For a local Ollama / vLLM server you can leave it empty.
 
 ## Tips
 

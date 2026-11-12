@@ -25,12 +25,13 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from typing import Any
 from datetime import datetime
 
 import cv2
 import numpy as np
 
-from qwen_client import Analysis, QwenClient
+from qwen_client import SYSTEM_PROMPT, Analysis, QwenClient
 
 WINDOW = "Qwen live camera"
 
@@ -55,53 +56,176 @@ def load_env_files() -> None:
         load_dotenv(path, override=False)
 
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--source", default="0",
-                   help="camera index (0 = default webcam) or a video file / stream URL")
-    p.add_argument("--base-url", default=os.environ.get("QWEN_BASE_URL", "http://localhost:11434/v1"),
-                   help="OpenAI-compatible API base URL (default: Ollama)")
-    p.add_argument("--model", default=os.environ.get("QWEN_MODEL", "qwen3-vl:8b"),
-                   help="model name as the server knows it")
+# Built-in defaults. config.toml overrides these, and command-line options override both.
+DEFAULTS: dict[str, Any] = {
+    "source": "0",
+    "base_url": "http://localhost:11434/v1",
+    "model": "qwen3-vl:8b",
+    "full": False,
+    "segment": 5.0,
+    "interval": 3.0,
+    "frames": 4,
+    "frame_gap": 0.5,
+    "max_side": 640,
+    "jpeg_quality": 80,
+    "max_tokens": 800,
+    "temperature": 0.2,
+    "timeout": 120.0,
+    "use_previous": True,
+    "system_prompt": SYSTEM_PROMPT,
+    "extra_body": None,
+    "yolo": None,
+    "log": None,
+    "srt": None,
+    "display": True,
+    "max_runtime": 0.0,
+}
+# Settings that can also come from environment variables / .env.
+ENV_VARS = {"base_url": "QWEN_BASE_URL", "model": "QWEN_MODEL"}
+# Settings where "" (or false) in config.toml means "off".
+OPTIONAL_STR = {"yolo", "log", "srt"}
+CONFIG_NAME = "config.toml"
+
+
+def find_config(explicit: str | None) -> str | None:
+    if explicit:
+        if not os.path.isfile(explicit):
+            sys.exit(f"Config file not found: {explicit}")
+        return explicit
+    for folder in (os.getcwd(), os.path.dirname(os.path.abspath(__file__))):
+        path = os.path.join(folder, CONFIG_NAME)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def load_config(path: str) -> dict[str, Any]:
+    """Read config.toml and check every key and value type against DEFAULTS."""
+    try:
+        import tomllib  # Python 3.11+
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib  # older Pythons: pip install tomli
+        except ModuleNotFoundError:
+            sys.exit("Reading config.toml needs Python 3.11+, or: pip install tomli")
+    try:
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+    except tomllib.TOMLDecodeError as exc:
+        sys.exit(f"Could not read {path}: {exc}\n"
+                 "Tip: for Windows paths use single quotes, e.g. source = 'C:\\videos\\clip.mp4'")
+
+    def bad(key: str, expected: str) -> None:
+        sys.exit(f"{path}: '{key}' should be {expected}, got {raw[key]!r}")
+
+    config: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key == "api_key":
+            sys.exit(f"{path}: don't put the API key here. Put QWEN_API_KEY in your .env file instead.")
+        if key not in DEFAULTS:
+            sys.exit(f"{path}: unknown setting '{key}'. Valid settings: {', '.join(DEFAULTS)}")
+        default = DEFAULTS[key]
+        if key == "source" and isinstance(value, int) and not isinstance(value, bool):
+            value = str(value)
+        if key in OPTIONAL_STR:
+            if value is False or value == "":
+                value = None
+            elif key == "yolo" and value is True:
+                value = "yolov8n.pt"
+            elif not isinstance(value, str):
+                bad(key, 'a text value in quotes, or "" for off')
+        elif key == "extra_body":
+            if not isinstance(value, dict):
+                bad(key, "a table: [extra_body]")
+            value = value or None
+        elif isinstance(default, bool):
+            if not isinstance(value, bool):
+                bad(key, "true or false")
+        elif isinstance(default, float):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                bad(key, "a number")
+            value = float(value)
+        elif isinstance(default, int):
+            if isinstance(value, bool) or not isinstance(value, int):
+                bad(key, "a whole number")
+        elif isinstance(default, str) and not isinstance(value, str):
+            bad(key, "a text value in quotes")
+        config[key] = value
+    return config
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    # First pass: only find out which config file to use.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config")
+    pre_args, _ = pre.parse_known_args(argv)
+    config_path = find_config(pre_args.config)
+    config = load_config(config_path) if config_path else {}
+
+    # Defaults < environment / .env < config.toml < command line.
+    settings = dict(DEFAULTS)
+    for key, var in ENV_VARS.items():
+        if os.environ.get(var):
+            if key in config and config[key] != os.environ[var]:
+                print(f"Note: using {key} = {config[key]!r} from {CONFIG_NAME} "
+                      f"({var} in your environment/.env is ignored).", file=sys.stderr)
+            settings[key] = os.environ[var]
+    settings.update(config)
+
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                epilog=f"All settings can also be set in {CONFIG_NAME}; "
+                                       "command-line options override it.")
+    on_off = argparse.BooleanOptionalAction
+    p.add_argument("--config", help=f"settings file to use (default: {CONFIG_NAME} in this folder)")
+    p.add_argument("--source", help="camera index (0 = default webcam) or a video file / stream URL")
+    p.add_argument("--base-url", help="OpenAI-compatible API base URL")
+    p.add_argument("--model", help="model name as the server knows it")
     p.add_argument("--api-key", default=os.environ.get("QWEN_API_KEY"),
-                   help="API key, if the server needs one")
-    p.add_argument("--full", action="store_true",
+                   help="API key (better: QWEN_API_KEY in .env)")
+    p.add_argument("--full", action=on_off,
                    help="video files only: analyse every part of the video, segment by segment, "
                         "as fast as the model answers (instead of sampling while it plays)")
-    p.add_argument("--segment", type=float, default=5.0,
-                   help="--full mode: length of each analysed segment in seconds")
-    p.add_argument("--interval", type=float, default=3.0,
+    p.add_argument("--segment", type=float, help="--full mode: seconds per analysed segment")
+    p.add_argument("--interval", type=float,
                    help="live mode: seconds to wait after each answer before the next automatic "
                         "analysis (0 = only analyse when you press space)")
-    p.add_argument("--frames", type=int, default=4,
-                   help="number of frames sent per analysis")
-    p.add_argument("--frame-gap", type=float, default=0.5,
-                   help="live mode: seconds between the frames that are sent")
-    p.add_argument("--max-side", type=int, default=640,
+    p.add_argument("--frames", type=int, help="number of frames sent per analysis")
+    p.add_argument("--frame-gap", type=float, help="live mode: seconds between the frames that are sent")
+    p.add_argument("--max-side", type=int,
                    help="frames are downscaled so their longest side is at most this many pixels")
-    p.add_argument("--max-tokens", type=int, default=800)
-    p.add_argument("--extra-body", type=json.loads, default=None,
+    p.add_argument("--jpeg-quality", type=int, help="JPEG quality of the frames sent (1-100)")
+    p.add_argument("--max-tokens", type=int, help="maximum length of the model's answer")
+    p.add_argument("--temperature", type=float, help="0 = most consistent, higher = more varied")
+    p.add_argument("--timeout", type=float, help="seconds to wait for an answer before giving up")
+    p.add_argument("--use-previous", action=on_off,
+                   help="send the previous description so the model can say what changed")
+    p.add_argument("--system-prompt", help="instructions given to the model")
+    p.add_argument("--extra-body", type=json.loads,
                    help='extra JSON fields for the request, e.g. for vLLM: '
                         '\'{"chat_template_kwargs": {"enable_thinking": false}}\'')
-    p.add_argument("--yolo", nargs="?", const="yolov8n.pt", default=None, metavar="WEIGHTS",
+    p.add_argument("--yolo", nargs="?", const="yolov8n.pt", metavar="WEIGHTS",
                    help="live mode: also draw YOLO boxes and pass its labels to Qwen as hints "
                         "(needs: pip install ultralytics)")
     p.add_argument("--log", help="append each analysis as a JSON line to this file")
     p.add_argument("--srt", help="video files only: also save the descriptions as a subtitle file "
                                  "you can play alongside the video (e.g. in VLC)")
-    p.add_argument("--no-display", action="store_true",
-                   help="don't open a window, just print the results")
-    p.add_argument("--max-runtime", type=float, default=0,
+    p.add_argument("--display", action=on_off, help="show the video window (--no-display: print only)")
+    p.add_argument("--max-runtime", type=float,
                    help="live mode: stop after this many seconds (0 = run until you quit)")
-    args = p.parse_args()
+    p.set_defaults(**settings)
+    args = p.parse_args(argv)
+    args.config = config_path
+
     if args.frames < 1:
-        p.error("--frames must be at least 1")
+        p.error("frames must be at least 1")
     if args.segment <= 0:
-        p.error("--segment must be greater than 0")
+        p.error("segment must be greater than 0")
+    if not 1 <= args.jpeg_quality <= 100:
+        p.error("jpeg_quality must be between 1 and 100")
     if args.source.isdigit() and (args.full or args.srt):
-        p.error("--full and --srt need a video file as --source, not a camera")
+        p.error("full and srt need a video file as the source, not a camera")
     if args.full and args.yolo:
-        p.error("--yolo is only supported in live mode, not with --full")
+        p.error("yolo is only supported in live mode, not with full")
     return args
 
 
@@ -316,7 +440,7 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
             results.add(item, *pending_span)
 
     print(f"Using {args.model} at {args.base_url}. "
-          + ("Press space to analyse, a for auto, q to quit." if not args.no_display else "Ctrl+C to stop."),
+          + ("Press space to analyse, a for auto, q to quit." if args.display else "Ctrl+C to stop."),
           flush=True)
 
     try:
@@ -356,12 +480,12 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
                 frames = [f for _, f, _ in buffer]
                 span = buffer[-1][0] - buffer[0][0]
                 pending_span = (buffer[0][2], buffer[-1][2])
-                previous = current.description if current else None
+                previous = current.description if current and args.use_previous else None
                 worker.submit(frames, span, previous, yolo_labels or None)
                 last_activity = now
                 manual_requested = False
 
-            if not args.no_display:
+            if args.display:
                 if worker.busy:
                     status, color = "Analysing...", (0, 255, 255)
                 elif error:
@@ -409,6 +533,8 @@ def read_segments(cap: cv2.VideoCapture, segment_s: float, n_frames: int):
     skipped with grab(), which avoids decoding them.
     """
     fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    duration = frame_count / fps if fps > 0 and frame_count > 0 else None
     frame_index = -1
     last_t = 0.0
     seg_index = 0
@@ -433,6 +559,8 @@ def read_segments(cap: cv2.VideoCapture, segment_s: float, n_frames: int):
             seg_end = seg_start + segment_s
             if eof:
                 seg_end = min(seg_end, last_t + (1 / fps if fps > 0 else 0))
+            if duration:
+                seg_end = min(seg_end, duration)
             yield seg_start, seg_end, frames
         if eof:
             return
@@ -449,11 +577,11 @@ def run_full(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
 
     print(f"Using {args.model} at {args.base_url}. Analysing the whole video"
           + (f" ({fmt_time(duration)}, {total} segments of {args.segment:g}s)" if duration else "")
-          + ". " + ("Press q in the window to stop." if not args.no_display else "Ctrl+C to stop."),
+          + ". " + ("Press q in the window to stop." if args.display else "Ctrl+C to stop."),
           flush=True)
 
     worker = AnalysisWorker(client)
-    show = not args.no_display
+    show = args.display
     previous: str | None = None
     started = time.monotonic()
 
@@ -485,7 +613,7 @@ def run_full(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
 
             if isinstance(item, Analysis):
                 results.add(item, seg_start, seg_end, srt_end=seg_end)
-                previous = item.description
+                previous = item.description if args.use_previous else None
                 if show:
                     view = frames[-1].copy()
                     draw_overlay(view, item, f"{label}  segment {progress}  {item.latency_s:.1f}s", (0, 255, 0))
@@ -513,7 +641,10 @@ def main() -> None:
                     else "Check the file path is correct."))
 
     client = QwenClient(args.base_url, args.model, api_key=args.api_key, max_side=args.max_side,
-                        max_tokens=args.max_tokens, extra_body=args.extra_body)
+                        max_tokens=args.max_tokens, temperature=args.temperature,
+                        timeout_s=args.timeout, extra_body=args.extra_body,
+                        system_prompt=args.system_prompt, jpeg_quality=args.jpeg_quality)
+    print(f"Settings: {args.config or 'built-in defaults (no ' + CONFIG_NAME + ' found)'}", flush=True)
     warning = client.check_server()
     if warning:
         print(f"Warning: {warning}", file=sys.stderr)
@@ -528,7 +659,7 @@ def main() -> None:
             run_live(args, cap, client, results, is_camera)
     finally:
         cap.release()
-        if not args.no_display:
+        if args.display:
             cv2.destroyAllWindows()
         results.write_srt(video_duration)
 
