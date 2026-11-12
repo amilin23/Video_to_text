@@ -30,6 +30,26 @@ from qwen_client import Analysis, QwenClient
 WINDOW = "Qwen live camera"
 
 
+def load_env_files() -> None:
+    """Load settings from a .env file in the current folder or next to this script.
+
+    Variables already set in the environment win over the file.
+    """
+    candidates = [os.path.join(os.getcwd(), ".env"),
+                  os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")]
+    found = [p for p in dict.fromkeys(candidates) if os.path.isfile(p)]
+    if not found:
+        return
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        print(f"Warning: found {found[0]} but python-dotenv is not installed, so it was ignored. "
+              "Run: pip install python-dotenv", file=sys.stderr)
+        return
+    for path in found:
+        load_dotenv(path, override=False)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--source", default="0",
@@ -169,6 +189,7 @@ def report(result: Analysis, model: str, log_path: str | None) -> None:
 
 
 def main() -> None:
+    load_env_files()  # before parse_args, which reads QWEN_* defaults from the environment
     args = parse_args()
     is_camera = args.source.isdigit()
     cap = cv2.VideoCapture(int(args.source) if is_camera else args.source)

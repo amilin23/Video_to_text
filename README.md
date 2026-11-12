@@ -71,7 +71,24 @@ Keys: **space** analyse now · **a** toggle automatic analysis · **q** quit.
 | `--no-display` | off | No window, just print results |
 | `--extra-body JSON` | none | Extra request fields, e.g. turn off thinking on vLLM: `'{"chat_template_kwargs": {"enable_thinking": false}}'` |
 
-Settings can also come from environment variables: `QWEN_BASE_URL`, `QWEN_MODEL`, `QWEN_API_KEY`.
+## API key and settings (`.env`)
+
+Copy the template and fill it in:
+
+```bash
+cp .env.example .env
+```
+
+```
+QWEN_API_KEY=your-key-here
+QWEN_BASE_URL=https://your-provider/v1
+QWEN_MODEL=your-model-name
+```
+
+The app loads `.env` automatically from the folder you run it in (or the
+project folder). `.env` is in `.gitignore`, so your key is never committed.
+Variables already set in your terminal, and command-line options, take priority
+over the file. For a local Ollama / vLLM server you can leave `QWEN_API_KEY` empty.
 
 ## Tips
 
