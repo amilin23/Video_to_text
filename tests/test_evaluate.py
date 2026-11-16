@@ -62,3 +62,22 @@ def test_log_file_and_coverage(tmp_path):
     results, exact = load_results(str(log))
     assert exact
     assert coverage(load_key(str(key)), results) == pytest.approx(0.6)
+
+
+def test_cider_rewards_matching_descriptions():
+    from evaluate import Cider
+    refs = [["a white mug with a spoon on a table"], ["an open laptop showing cat pictures"],
+            ["a bottle standing on a tiled floor"]]
+    cider = Cider(refs)
+    good = cider.score("a white mug with a spoon on the table", refs[0])
+    bad = cider.score("an open laptop showing cat pictures", refs[0])
+    assert good > 1.0 > bad >= 0.0
+    assert cider.score("anything", []) == 0.0
+
+
+def test_multiple_references_split_on_pipe(tmp_path):
+    path = tmp_path / "key.csv"
+    path.write_text('start,end,objects,what_happens\n0:00,0:05,mug,"A mug, a spoon. | A cup on a table."\n',
+                    encoding="utf-8")
+    [seg] = load_key(str(path))
+    assert seg.references == ["A mug, a spoon.", "A cup on a table."]

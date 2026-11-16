@@ -156,11 +156,14 @@ never committed. For a local Ollama / vLLM server you can leave it empty.
 
 ## Evaluating results (`evaluate.py`)
 
-Score a run against an answer key you write by hand: what the model found,
-missed and invented, plus speed and coverage.
+Score a run against an answer key you write by hand: how close the descriptions
+are (CIDEr), what the model found, missed and invented, plus speed and coverage.
 
 1. Write an answer key per stretch of video (see `eval/object_video_key.csv`):
-   real objects separated by `;`, other accepted names by `|` (e.g. `mug|cup`).
+   - `objects`: real objects separated by `;`, other accepted names by `|` (e.g. `mug|cup`)
+   - `what_happens`: reference descriptions for CIDEr, separated by `|`, in double quotes.
+     Write 1-2 full sentences, about as long as the model's descriptions:
+     CIDEr punishes length differences heavily.
 2. Run the app with `LOG = 'run1.jsonl'` in `settings.py` (or copy the terminal output into a `.txt`).
 3. Score it:
 
@@ -168,18 +171,16 @@ missed and invented, plus speed and coverage.
 python evaluate.py eval/object_video_key.csv run1.jsonl
 ```
 
-It prints, per stretch and overall:
-
 | Measure | Meaning |
 |---|---|
+| CIDEr | word and phrase overlap with the references (CIDEr-D, same as the COCO evaluation code) |
 | Object recall | real objects found / real objects (low = misses things) |
 | Object precision | listed objects that are real / listed objects (low = invents things) |
 | Latency | seconds per answer |
 | Coverage | share of the video analysed (needs the LOG file) |
 
-It also writes a scoring sheet (`run1_scores.csv`) with every description and
-an empty `score_0_to_2` column. Fill it in (2 = correct, 1 = partly, 0 = wrong),
-then add `--scores run1_scores.csv` to include your scores.
+Optional: `--sheet sheet.csv` writes every description with an empty `score_0_to_2`
+column to score by hand; `--scores sheet.csv` includes those scores.
 
 ## Tips
 

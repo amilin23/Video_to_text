@@ -12,14 +12,19 @@ The answer key is a CSV with one row per stretch of video:
   (e.g. "mug|cup"), so the model isn't marked wrong for a different word.
 - Lines starting with # are ignored.
 
+- what_happens: a reference description written by a person, used for CIDEr.
+  Write it in 1-2 full sentences, about as long as the model's descriptions.
+  Several references for the same stretch: separate them with "|".
+
 It reports, per stretch and overall:
+- CIDEr:     how closely the model's descriptions match the references (CIDEr-D)
 - recall:    real objects the model found / real objects   (low = it misses things)
 - precision: listed objects that are real / listed objects  (low = it invents things)
 - latency:   seconds per answer
 - coverage:  share of the video that was analysed (needs the LOG file)
 
-It also writes a CSV with every description and an empty score column (0, 1 or 2)
-for you to fill in; run again with --scores <that file> to include your scores.
+Optional: --sheet writes a CSV with every description and an empty score column
+(0, 1 or 2) to fill in by hand; --scores <that file> includes those scores.
 """
 
 from __future__ import annotations
@@ -27,9 +32,11 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import re
 import statistics
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,6 +56,10 @@ class Segment:
     end: float
     objects: list[list[str]]  # each real object = the names accepted for it
     happens: str
+
+    @property
+    def references(self) -> list[str]:
+        return [r.strip() for r in self.happens.split("|") if r.strip()]
 
 
 # ---------------------------------------------------------------- reading files
@@ -122,6 +133,82 @@ def load_results(path: str) -> tuple[list[Result], bool]:
     if not results:
         sys.exit(f"{path}: no results found. Paste lines like '[0:05-0:10] (2.1s) Objects: ...'")
     return results, False
+
+
+# ---------------------------------------------------------------- CIDEr-D
+
+def cider_tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def ngrams(tokens: list[str], n: int = 4) -> Counter:
+    counts: Counter = Counter()
+    for k in range(1, n + 1):
+        for i in range(len(tokens) - k + 1):
+            counts[tuple(tokens[i:i + k])] += 1
+    return counts
+
+
+class Cider:
+    """CIDEr-D as in the COCO caption evaluation code (pycocoevalcap): n-grams 1-4,
+    TF-IDF weights from the references, clipped counts, a length penalty (sigma 6)
+    and a x10 scale. Document frequencies come from the references of all stretches."""
+
+    def __init__(self, references_per_item: list[list[str]], n: int = 4, sigma: float = 6.0) -> None:
+        self.n, self.sigma = n, sigma
+        self.doc_freq: Counter = Counter()
+        for refs in references_per_item:
+            seen = set()
+            for ref in refs:
+                seen.update(ngrams(cider_tokens(ref), n))
+            self.doc_freq.update(seen)
+        self.ref_len = math.log(float(len(references_per_item))) if references_per_item else 0.0
+
+    def _vector(self, counts: Counter):
+        vec = [dict() for _ in range(self.n)]
+        norm = [0.0] * self.n
+        length = 0
+        for gram, tf in counts.items():
+            k = len(gram) - 1
+            df = math.log(max(1.0, self.doc_freq[gram]))
+            vec[k][gram] = tf * (self.ref_len - df)
+            norm[k] += vec[k][gram] ** 2
+            if k == 1:
+                length += tf  # same length measure as the reference implementation
+        return vec, [math.sqrt(x) for x in norm], length
+
+    def score(self, candidate: str, references: list[str]) -> float:
+        if not references:
+            return 0.0
+        vec, norm, length = self._vector(ngrams(cider_tokens(candidate), self.n))
+        total = 0.0
+        for ref in references:
+            r_vec, r_norm, r_length = self._vector(ngrams(cider_tokens(ref), self.n))
+            penalty = math.exp(-((length - r_length) ** 2) / (2 * self.sigma ** 2))
+            sims = []
+            for k in range(self.n):
+                val = sum(min(v, r_vec[k].get(g, 0.0)) * r_vec[k].get(g, 0.0) for g, v in vec[k].items())
+                if norm[k] and r_norm[k]:
+                    val /= norm[k] * r_norm[k]
+                sims.append(val * penalty)
+            total += sum(sims) / self.n
+        return total / len(references) * 10.0
+
+
+def cider_by_segment(scores: list["SegmentScore"]) -> list[float | None]:
+    """Mean CIDEr of the answers in each stretch; 0 when nothing answered; None without a reference."""
+    with_refs = [s.segment.references for s in scores if s.segment.references]
+    cider = Cider(with_refs)
+    out: list[float | None] = []
+    for s in scores:
+        refs = s.segment.references
+        if not refs:
+            out.append(None)
+        elif not s.results:
+            out.append(0.0)
+        else:
+            out.append(statistics.mean(cider.score(r.description, refs) for r in s.results))
+    return out
 
 
 # ---------------------------------------------------------------- matching objects
@@ -203,13 +290,15 @@ def names(items: list[list[str]]) -> str:
 
 
 def report(scores: list[SegmentScore], results: list[Result], exact_times: bool, key: list[Segment]) -> None:
-    for s in scores:
+    ciders = cider_by_segment(scores)
+    for s, c in zip(scores, ciders):
         seg = s.segment
         n_real, n_listed = len(seg.objects), len(s.correct) + len(s.invented)
-        print(f"\n{fmt(seg.start)}-{fmt(seg.end)}   recall {pct(len(s.found), n_real)}   "
+        cider_text = "-" if c is None else f"{c:.2f}"
+        print(f"\n{fmt(seg.start)}-{fmt(seg.end)}   CIDEr {cider_text}   recall {pct(len(s.found), n_real)}   "
               f"precision {pct(len(s.correct), n_listed)}   answers: {len(s.results)}")
         if seg.happens:
-            print(f"  happens:  {seg.happens}")
+            print(f"  reference: {seg.happens}")
         print(f"  found:    {names(s.found)}")
         print(f"  missed:   {names(s.missed)}")
         print(f"  invented: {', '.join(s.invented) or '-'}")
@@ -223,6 +312,20 @@ def report(scores: list[SegmentScore], results: list[Result], exact_times: bool,
     latencies = [r.latency for r in results if r.latency is not None]
 
     print("\n" + "=" * 60)
+    scored = [c for c in ciders if c is not None]
+    if scored:
+        print(f"CIDEr:            {statistics.mean(scored):.2f}   (mean of {len(scored)} stretches; "
+              "0 = no match, higher = closer to the references)")
+        ref_words = [len(cider_tokens(r)) for s in scores for r in s.segment.references]
+        hyp_words = [len(cider_tokens(r.description)) for s in scores for r in s.results if s.segment.references]
+        if ref_words and hyp_words:
+            ratio = statistics.mean(hyp_words) / max(1.0, statistics.mean(ref_words))
+            if ratio > 1.5 or ratio < 0.67:
+                print(f"  Warning: descriptions average {statistics.mean(hyp_words):.0f} words but references "
+                      f"{statistics.mean(ref_words):.0f}. CIDEr punishes length differences heavily, so this score "
+                      "is mostly a length penalty. Write references of similar length.")
+    else:
+        print("CIDEr:            - (add reference descriptions in the what_happens column)")
     print(f"Object recall:    {pct(found, real)}   (found / real)")
     print(f"Object precision: {pct(correct, listed)}   (real / listed)")
     if latencies:
@@ -263,7 +366,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("key", help="answer key CSV")
     p.add_argument("results", help="the LOG file (.jsonl) or a .txt with text copied from the terminal")
-    p.add_argument("--sheet", help="where to write the scoring sheet (default: <results>_scores.csv)")
+    p.add_argument("--sheet", help="also write a sheet for scoring descriptions by hand (0-2) to this CSV")
     p.add_argument("--scores", help="a filled-in scoring sheet, to include your description scores")
     args = p.parse_args()
 
@@ -272,14 +375,14 @@ def main() -> None:
     scores = score(key, results)
     report(scores, results, exact, key)
 
-    sheet = args.sheet or str(Path(args.results).with_name(Path(args.results).stem + "_scores.csv"))
     if args.scores:
         read_scores(args.scores)
-    elif not Path(sheet).exists():
-        write_sheet(sheet, scores)
-        print(f"\nScoring sheet: {sheet}  (fill in score_0_to_2, then add --scores {sheet})")
-    else:
-        print(f"\nScoring sheet already exists: {sheet}  (not overwritten; add --scores {sheet} to read it)")
+    if args.sheet:
+        if Path(args.sheet).exists():
+            print(f"\nScoring sheet already exists: {args.sheet} (not overwritten)")
+        else:
+            write_sheet(args.sheet, scores)
+            print(f"\nScoring sheet: {args.sheet}  (fill in score_0_to_2, then add --scores {args.sheet})")
 
 
 if __name__ == "__main__":

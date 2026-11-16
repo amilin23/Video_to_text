@@ -1,9 +1,11 @@
 # Answer key for the object video (bottle, mug, laptop).
 # DRAFT: written from a few frames of the recording. Check it against the video and correct it.
-# objects: separated by ";"   other accepted names: separated by "|"
+# objects:      real objects, separated by ";"   other accepted names: separated by "|"
+# what_happens: reference descriptions for CIDEr, 1-2 full sentences each, separated by "|"
+#               (put the whole field in double quotes)
 start,end,objects,what_happens
-0:00,0:05,bottle|thermos; floor|tile; shadow,camera tilts up from the tiled floor to a white bottle with a strap
-0:05,0:10,mug|cup; spoon; pen; coin; table|desk; laptop,camera moves to a small table with a mug, pens, coins and a laptop
-0:10,0:15,pen; coin; mug|cup; spoon; table|desk; laptop,close view of the pens and coins next to the mug
-0:15,0:20,laptop|computer; table|desk; keyboard,camera moves to the open laptop showing a grid of cat pictures
-0:20,0:26,laptop|computer; table|desk; keyboard; cat|animal|image,camera stays on the laptop screen with cat pictures
+0:00,0:05,bottle|thermos; floor|tile; shadow,"The camera points down at a tiled floor with the shadow of the person filming, then tilts up to show a white bottle with a strap standing on the floor against a beige wall. | A white thermos with a strap stands on a white tiled floor as the camera moves up from the floor and the shadow of the person holding the phone."
+0:05,0:10,mug|cup; spoon; pen; coin; table|desk; laptop,"The camera moves to a small white table holding a white mug with a C logo and a spoon, a red and a blue pen, three coins and a laptop on the left. | A white mug with a spoon, two pens and three coins sit on a small white table next to an open laptop."
+0:10,0:15,pen; coin; mug|cup; spoon; table|desk; laptop,"The camera moves in close to the red and blue pens and the three coins on the white table, with the white mug and spoon at the top of the frame. | Close view of two pens and three coins lying on the white table beside the mug with a spoon."
+0:15,0:20,laptop|computer; table|desk; keyboard,"The camera pans left to the open laptop on the white table, whose screen shows a grid of cat pictures. | An open laptop on a white table shows many cat images on its screen as the camera moves towards it."
+0:20,0:26,laptop|computer; table|desk; keyboard; cat|animal|image,"The camera stays on the open laptop on the white desk, showing its keyboard and a screen full of cat pictures. | A laptop on a white desk displays a grid of cat photos while the camera moves slightly around it."
