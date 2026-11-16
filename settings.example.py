@@ -138,3 +138,20 @@ LOG = 'auto'
 # Save descriptions as a subtitle file (video files only).
 # 'auto' = results/<video name>_<date-time>.srt, None = off, or a file name
 SRT = None
+
+
+# ------------------------------------------------------------ AI judge (evaluate.py --judge)
+
+# The judge checks each description against the video frames and scores it 0-2.
+# Best: a DIFFERENT model than the one being judged (a model judging itself is too lenient).
+# None = use the same server / model as above.
+JUDGE_BASE_URL = None
+JUDGE_MODEL = None
+
+# Extra request fields for the judge. None = same as EXTRA_BODY
+JUDGE_EXTRA_BODY = None
+
+# Frames the judge looks at per description
+JUDGE_FRAMES = 4
+
+# A judge on another service with its own key: put JUDGE_API_KEY in .env

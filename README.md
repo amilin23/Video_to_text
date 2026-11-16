@@ -197,33 +197,47 @@ never committed. For a local Ollama / vLLM server you can leave it empty.
 
 ## Evaluating results (`evaluate.py`)
 
-Score a run against an answer key you write by hand: how close the descriptions
-are (CIDEr), what the model found, missed and invented, plus speed and coverage.
+Two ways to score a run, usable together:
 
-1. Write an answer key per stretch of video (see `eval/object_video_key.csv`):
-   - `objects`: real objects separated by `;`, other accepted names by `|` (e.g. `mug|cup`).
-     A `?` in front marks a borderline object (e.g. `?table`): never counted as missed or invented.
-   - `what_happens`: reference descriptions for CIDEr, separated by `|`, in double quotes.
-     Write 1-2 full sentences, about as long as the model's descriptions:
-     CIDEr punishes length differences heavily.
-2. Run the app (with `LOG = 'auto'`, the default, each run is saved in `results/`),
-   or copy the terminal output into a `.txt`.
-3. Score it:
+**1. AI judge (no answer key needed).** For every description in the log, the
+matching frames are taken from the video and sent to a judge model with the
+description. It scores each one 2 = correct, 1 = partly, 0 = wrong, and lists
+claims it can't see in the frames.
 
 ```bash
-python evaluate.py eval/object_video_key.csv run1.jsonl
+python evaluate.py results/desk_20261116-103542.jsonl --judge
+```
+
+Set the judge up in `settings.py` (`JUDGE_MODEL`, `JUDGE_BASE_URL`, `JUDGE_FRAMES`).
+Use a **different model** than the one being judged if you can: a model judging
+its own descriptions tends to be too lenient. A judge on another service with its
+own key reads `JUDGE_API_KEY` from `.env`.
+
+**2. Answer key (objects).** Write the real objects per stretch of video
+(see `eval/object_video_key.csv`): separated by `;`, other accepted names with `|`
+(e.g. `mug|cup`), and `?` in front of borderline objects (never counted as missed or invented).
+
+```bash
+python evaluate.py results/desk_20261116-103542.jsonl --key eval/my_object_key.csv
 ```
 
 | Measure | Meaning |
 |---|---|
-| CIDEr | word and phrase overlap with the references (CIDEr-D, same as the COCO evaluation code) |
+| Judge score | average of 0-2 over all descriptions |
+| Hallucination | share of descriptions with at least one claim the judge can't see |
 | Object recall | real objects found / real objects (low = misses things) |
 | Object precision | listed objects that are real / listed objects (low = invents things) |
 | Latency | seconds per answer |
-| Coverage | share of the video analysed (needs the LOG file) |
+| Coverage | share of the video analysed (needs the LOG file and a key) |
 
-Optional: `--sheet sheet.csv` writes every description with an empty `score_0_to_2`
-column to score by hand; `--scores sheet.csv` includes those scores.
+**Check the judge.** The judge's scores are saved to `<log>_judged.csv` with an
+empty `my_score` column. Score about 10 rows yourself (0, 1 or 2), then:
+
+```bash
+python evaluate.py --check results/desk_20261116-103542_judged.csv
+```
+
+It shows how often the judge agrees with you, and whether it is more lenient or stricter.
 
 ## Tips
 

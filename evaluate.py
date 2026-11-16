@@ -1,32 +1,32 @@
-"""Score the app's results against an answer key you write by hand.
+"""Evaluate the app's results: an AI judge checks each description against the video,
+and (optionally) an answer key scores the object lists.
 
-    python evaluate.py answer_key.csv results.jsonl     # the LOG file from settings.py
-    python evaluate.py answer_key.csv terminal.txt      # text copied from the terminal
+    python evaluate.py results/desk_20261116-103542.jsonl --judge
+    python evaluate.py results/desk_20261116-103542.jsonl --key eval/my_object_key.csv
+    python evaluate.py results/desk_20261116-103542.jsonl --judge --key eval/my_object_key.csv
 
-The answer key is a CSV with one row per stretch of video:
+Results: the LOG file the app writes (results/*.jsonl), or a .txt with text copied
+from the terminal (then also give --video, and coverage can't be measured).
 
-    start,end,objects,what_happens
-    0:00,0:05,bottle|thermos; floor|tiles; shadow,camera tilts up from the floor to a bottle
+AI judge (--judge): for every description, the matching frames are taken from the
+video and sent to a judge model with the description. The judge scores it
+2 = correct, 1 = partly correct, 0 = wrong, and lists claims it can't see in the
+frames. Configure the judge in settings.py (JUDGE_MODEL, JUDGE_BASE_URL, ...).
+Use a different model than the one being judged: a model judging itself is too lenient.
 
-- objects: the real objects, separated by ";". Write other accepted names with "|"
-  (e.g. "mug|cup"), so the model isn't marked wrong for a different word.
-  Start a borderline object with "?" (e.g. "?table"): it doesn't count as missed if the
-  model leaves it out, and doesn't count as invented if the model lists it.
-- Lines starting with # are ignored.
+Check the judge: the judge's scores are saved to <results>_judged.csv with an
+empty my_score column. Score some rows yourself (0, 1 or 2), then:
 
-- what_happens: a reference description written by a person, used for CIDEr.
-  Write it in 1-2 full sentences, about as long as the model's descriptions.
-  Several references for the same stretch: separate them with "|".
+    python evaluate.py --check results/desk_20261116-103542_judged.csv
 
-It reports, per stretch and overall:
-- CIDEr:     how closely the model's descriptions match the references (CIDEr-D)
-- recall:    real objects the model found / real objects   (low = it misses things)
-- precision: listed objects that are real / listed objects  (low = it invents things)
-- latency:   seconds per answer
-- coverage:  share of the video that was analysed (needs the LOG file)
+Answer key (--key): a CSV with one row per stretch of video:
 
-Optional: --sheet writes a CSV with every description and an empty score column
-(0, 1 or 2) to fill in by hand; --scores <that file> includes those scores.
+    start,end,objects,notes
+    0:00,0:05,bottle|thermos; ?floor; ?shadow,camera tilts up to a bottle
+
+- objects: the real objects, separated by ";". Other accepted names with "|" (e.g. "mug|cup").
+  A "?" in front marks a borderline object: never counted as missed or as invented.
+- notes: optional, for you. Lines starting with # are ignored.
 """
 
 from __future__ import annotations
@@ -34,12 +34,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
+import os
 import re
 import statistics
 import sys
-from collections import Counter
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -50,6 +50,8 @@ class Result:
     latency: float | None
     objects: list[str]
     description: str
+    source: str | None = None
+    model: str | None = None
 
 
 @dataclass
@@ -57,21 +59,24 @@ class Segment:
     start: float
     end: float
     objects: list[list[str]]  # each real object = the names accepted for it
-    happens: str
-    optional: list[list[str]] = None  # borderline objects: never missed, never invented
+    notes: str = ""
+    optional: list[list[str]] = field(default_factory=list)  # never missed, never invented
 
-    @property
-    def references(self) -> list[str]:
-        return [r.strip() for r in self.happens.split("|") if r.strip()]
+
+@dataclass
+class Verdict:
+    score: int | None  # 2 correct, 1 partly, 0 wrong; None = the judge failed
+    unsupported: list[str]
+    reason: str
+    latency: float = 0.0
 
 
 # ---------------------------------------------------------------- reading files
 
 def parse_time(text: str) -> float:
     """'1:05' -> 65.0, '1:02:03' -> 3723.0, '12.5' -> 12.5"""
-    parts = text.strip().split(":")
     try:
-        numbers = [float(p) for p in parts]
+        numbers = [float(p) for p in text.strip().split(":")]
     except ValueError:
         raise ValueError(f"not a time: {text!r} (use m:ss, like 1:05)") from None
     seconds = 0.0
@@ -93,14 +98,16 @@ def load_key(path: str) -> list[Segment]:
         try:
             start, end = parse_time(row["start"]), parse_time(row["end"])
         except (KeyError, TypeError, ValueError) as exc:
-            sys.exit(f"{path}, row {i}: {exc}. The header must be: start,end,objects,what_happens")
+            sys.exit(f"{path}, row {i}: {exc}. The header must be: start,end,objects,notes")
         items = [item.strip() for item in (row.get("objects") or "").split(";") if item.strip()]
         names = lambda item: [n.strip() for n in item.lstrip("?").split("|") if n.strip()]
-        objects = [names(i) for i in items if not i.startswith("?")]
-        optional = [names(i) for i in items if i.startswith("?")]
-        # Commas in what_happens split it into extra columns; join them back together.
-        happens = ",".join([row.get("what_happens") or ""] + (row.get(None) or [])).strip(", ")
-        segments.append(Segment(start, end, [o for o in objects if o], happens, [o for o in optional if o]))
+        # Commas in the last column split it into extra columns; join them back together.
+        last = row.get("notes") if "notes" in row else row.get("what_happens")
+        notes = ",".join([last or ""] + (row.get(None) or [])).strip(", ")
+        segments.append(Segment(start, end,
+                                [o for o in (names(i) for i in items if not i.startswith("?")) if o],
+                                notes,
+                                [o for o in (names(i) for i in items if i.startswith("?")) if o]))
     if not segments:
         sys.exit(f"{path}: no rows found")
     return sorted(segments, key=lambda s: s.start)
@@ -121,9 +128,10 @@ def load_results(path: str) -> tuple[list[Result], bool]:
             row = json.loads(line)
             if "video_start_s" not in row:
                 sys.exit(f"{path}, line {n}: no video times. This log was recorded from a camera, "
-                         "so it can't be matched to an answer key.")
+                         "so it can't be matched to a video.")
             results.append(Result(row["video_start_s"], row["video_end_s"], row.get("latency_s"),
-                                  row.get("objects", []), row.get("description", "")))
+                                  row.get("objects", []), row.get("description", ""),
+                                  row.get("source"), row.get("model")))
         return results, True
 
     results: list[Result] = []
@@ -140,83 +148,7 @@ def load_results(path: str) -> tuple[list[Result], bool]:
     return results, False
 
 
-# ---------------------------------------------------------------- CIDEr-D
-
-def cider_tokens(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", text.lower())
-
-
-def ngrams(tokens: list[str], n: int = 4) -> Counter:
-    counts: Counter = Counter()
-    for k in range(1, n + 1):
-        for i in range(len(tokens) - k + 1):
-            counts[tuple(tokens[i:i + k])] += 1
-    return counts
-
-
-class Cider:
-    """CIDEr-D as in the COCO caption evaluation code (pycocoevalcap): n-grams 1-4,
-    TF-IDF weights from the references, clipped counts, a length penalty (sigma 6)
-    and a x10 scale. Document frequencies come from the references of all stretches."""
-
-    def __init__(self, references_per_item: list[list[str]], n: int = 4, sigma: float = 6.0) -> None:
-        self.n, self.sigma = n, sigma
-        self.doc_freq: Counter = Counter()
-        for refs in references_per_item:
-            seen = set()
-            for ref in refs:
-                seen.update(ngrams(cider_tokens(ref), n))
-            self.doc_freq.update(seen)
-        self.ref_len = math.log(float(len(references_per_item))) if references_per_item else 0.0
-
-    def _vector(self, counts: Counter):
-        vec = [dict() for _ in range(self.n)]
-        norm = [0.0] * self.n
-        length = 0
-        for gram, tf in counts.items():
-            k = len(gram) - 1
-            df = math.log(max(1.0, self.doc_freq[gram]))
-            vec[k][gram] = tf * (self.ref_len - df)
-            norm[k] += vec[k][gram] ** 2
-            if k == 1:
-                length += tf  # same length measure as the reference implementation
-        return vec, [math.sqrt(x) for x in norm], length
-
-    def score(self, candidate: str, references: list[str]) -> float:
-        if not references:
-            return 0.0
-        vec, norm, length = self._vector(ngrams(cider_tokens(candidate), self.n))
-        total = 0.0
-        for ref in references:
-            r_vec, r_norm, r_length = self._vector(ngrams(cider_tokens(ref), self.n))
-            penalty = math.exp(-((length - r_length) ** 2) / (2 * self.sigma ** 2))
-            sims = []
-            for k in range(self.n):
-                val = sum(min(v, r_vec[k].get(g, 0.0)) * r_vec[k].get(g, 0.0) for g, v in vec[k].items())
-                if norm[k] and r_norm[k]:
-                    val /= norm[k] * r_norm[k]
-                sims.append(val * penalty)
-            total += sum(sims) / self.n
-        return total / len(references) * 10.0
-
-
-def cider_by_segment(scores: list["SegmentScore"]) -> list[float | None]:
-    """Mean CIDEr of the answers in each stretch; 0 when nothing answered; None without a reference."""
-    with_refs = [s.segment.references for s in scores if s.segment.references]
-    cider = Cider(with_refs)
-    out: list[float | None] = []
-    for s in scores:
-        refs = s.segment.references
-        if not refs:
-            out.append(None)
-        elif not s.results:
-            out.append(0.0)
-        else:
-            out.append(statistics.mean(cider.score(r.description, refs) for r in s.results))
-    return out
-
-
-# ---------------------------------------------------------------- matching objects
+# ---------------------------------------------------------------- objects against the answer key
 
 def words(name: str) -> frozenset[str]:
     out = set()
@@ -243,8 +175,6 @@ def unique(names: list[str]) -> list[str]:
     return out
 
 
-# ---------------------------------------------------------------- scoring
-
 @dataclass
 class SegmentScore:
     segment: Segment
@@ -264,14 +194,17 @@ def score(key: list[Segment], results: list[Result]) -> list[SegmentScore]:
         listed = unique([o for r in mine for o in r.objects])
         found = [real for real in seg.objects if any(same_object(p, real) for p in listed)]
         missed = [real for real in seg.objects if real not in found]
-        correct = [p for p in listed if any(same_object(p, real) for real in seg.objects + (seg.optional or []))]
+        correct = [p for p in listed if any(same_object(p, real) for real in seg.objects + seg.optional)]
         invented = [p for p in listed if p not in correct]
         scores.append(SegmentScore(seg, mine, found, missed, correct, invented))
     return scores
 
 
-def coverage(key: list[Segment], results: list[Result]) -> float:
-    lo, hi = key[0].start, max(s.end for s in key)
+def coverage(key_or_span, results: list[Result]) -> float:
+    if isinstance(key_or_span, tuple):
+        lo, hi = key_or_span
+    else:
+        lo, hi = key_or_span[0].start, max(s.end for s in key_or_span)
     spans = sorted((max(r.start, lo), min(r.end, hi)) for r in results if r.end > lo and r.start < hi)
     covered, cur_s, cur_e = 0.0, None, None
     for s, e in spans:
@@ -294,100 +227,260 @@ def names(items: list[list[str]]) -> str:
     return ", ".join(item[0] for item in items) or "-"
 
 
-def report(scores: list[SegmentScore], results: list[Result], exact_times: bool, key: list[Segment]) -> None:
-    ciders = cider_by_segment(scores)
-    for s, c in zip(scores, ciders):
+def report_objects(scores: list[SegmentScore]) -> None:
+    print("\nOBJECTS (against the answer key)")
+    for s in scores:
         seg = s.segment
-        n_real, n_listed = len(seg.objects), len(s.correct) + len(s.invented)
-        cider_text = "-" if c is None else f"{c:.2f}"
-        print(f"\n{fmt(seg.start)}-{fmt(seg.end)}   CIDEr {cider_text}   recall {pct(len(s.found), n_real)}   "
+        n_listed = len(s.correct) + len(s.invented)
+        print(f"\n{fmt(seg.start)}-{fmt(seg.end)}   recall {pct(len(s.found), len(seg.objects))}   "
               f"precision {pct(len(s.correct), n_listed)}   answers: {len(s.results)}")
-        if seg.happens:
-            print(f"  reference: {seg.happens}")
+        if seg.notes:
+            print(f"  notes:    {seg.notes}")
         print(f"  found:    {names(s.found)}")
         print(f"  missed:   {names(s.missed)}")
         print(f"  invented: {', '.join(s.invented) or '-'}")
         if not s.results:
             print("  (no answer covers this part of the video)")
 
-    found = sum(len(s.found) for s in scores)
-    real = sum(len(s.segment.objects) for s in scores)
-    correct = sum(len(s.correct) for s in scores)
-    listed = sum(len(s.correct) + len(s.invented) for s in scores)
-    latencies = [r.latency for r in results if r.latency is not None]
 
-    print("\n" + "=" * 60)
-    scored = [c for c in ciders if c is not None]
-    if scored:
-        print(f"CIDEr:            {statistics.mean(scored):.2f}   (mean of {len(scored)} stretches; "
-              "0 = no match, higher = closer to the references)")
-        ref_words = [len(cider_tokens(r)) for s in scores for r in s.segment.references]
-        hyp_words = [len(cider_tokens(r.description)) for s in scores for r in s.results if s.segment.references]
-        if ref_words and hyp_words:
-            ratio = statistics.mean(hyp_words) / max(1.0, statistics.mean(ref_words))
-            if ratio > 1.5 or ratio < 0.67:
-                print(f"  Warning: descriptions average {statistics.mean(hyp_words):.0f} words but references "
-                      f"{statistics.mean(ref_words):.0f}. CIDEr punishes length differences heavily, so this score "
-                      "is mostly a length penalty. Write references of similar length.")
+# ---------------------------------------------------------------- the AI judge
+
+JUDGE_PROMPT = (
+    "You check descriptions of short video clips. You get frames from the clip, oldest first, "
+    "and a description written by another AI. Judge only against what is visible in the frames. "
+    "Score: 2 = everything stated is visible and the main things are described; "
+    "1 = mostly right, but with a small error, an unsupported detail or an important thing missed; "
+    "0 = mostly wrong or invented. "
+    "List every claim that the frames do not support: objects, actions, colours, counts, camera "
+    "movement, or statements that something is absent when you cannot verify it. "
+    "Reply with JSON only: "
+    '{"score": 0, "unsupported": ["short claim"], "reason": "one short sentence"}'
+)
+
+
+def judge_settings(settings_path: str | None = None) -> tuple[dict, str | None]:
+    """The app's settings (settings.py + .env), so the judge is configured in the same place."""
+    import live_camera as lc
+
+    lc.load_env_files()
+    path = lc.find_settings(settings_path)
+    cfg = dict(lc.DEFAULTS)
+    for key, var in lc.ENV_VARS.items():
+        if os.environ.get(var):
+            cfg[key] = os.environ[var]
+    if path:
+        cfg.update(lc.load_settings(path))
+    return cfg, path
+
+
+def make_judge(cfg: dict):
+    from qwen_client import QwenClient
+
+    extra = cfg["judge_extra_body"] if cfg.get("judge_extra_body") is not None else cfg["extra_body"]
+    return QwenClient(cfg.get("judge_base_url") or cfg["base_url"], cfg.get("judge_model") or cfg["model"],
+                      api_key=os.environ.get("JUDGE_API_KEY") or os.environ.get("QWEN_API_KEY"),
+                      max_side=cfg["max_side"], max_tokens=max(cfg["max_tokens"], 400),
+                      temperature=0.0, timeout_s=cfg["timeout"], extra_body=extra,
+                      jpeg_quality=cfg["jpeg_quality"])
+
+
+def frames_between(cap, start: float, end: float, count: int) -> list:
+    """`count` frames spread evenly between start and end (seconds)."""
+    import cv2
+
+    if end <= start:
+        times = [start]
     else:
-        print("CIDEr:            - (add reference descriptions in the what_happens column)")
-    print(f"Object recall:    {pct(found, real)}   (found / real)")
-    print(f"Object precision: {pct(correct, listed)}   (real / listed)")
-    if latencies:
-        print(f"Latency:          avg {statistics.mean(latencies):.1f} s, median {statistics.median(latencies):.1f} s, "
-              f"max {max(latencies):.1f} s  ({len(latencies)} answers)")
-    if exact_times:
-        print(f"Coverage:         {100 * coverage(key, results):.0f}% of the video analysed")
-    else:
-        print("Coverage:         needs the LOG file (the terminal rounds times to whole seconds)")
+        times = [start + (i + 0.5) * (end - start) / count for i in range(count)]
+    frames = []
+    for t in times:
+        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+        ok, frame = cap.read()
+        if ok:
+            frames.append(frame)
+    return frames
 
 
-def write_sheet(path: str, scores: list[SegmentScore]) -> None:
+def parse_verdict(text: str) -> Verdict:
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[1]
+    start, end = text.find("{"), text.rfind("}")
+    try:
+        data = json.loads(text[start:end + 1]) if start != -1 and end > start else None
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, dict):
+        return Verdict(None, [], f"unreadable judge reply: {text.strip()[:120]}")
+    try:
+        score = int(data.get("score"))
+    except (TypeError, ValueError):
+        score = None
+    if score not in (0, 1, 2):
+        score = None
+    unsupported = data.get("unsupported") or []
+    if isinstance(unsupported, str):
+        unsupported = [unsupported]
+    return Verdict(score, [str(u).strip() for u in unsupported if str(u).strip()],
+                   str(data.get("reason") or "").strip())
+
+
+def judge_one(client, frames: list, result: Result) -> Verdict:
+    from qwen_client import encode_frame
+
+    content = [{"type": "text", "text": f"{len(frames)} frames from the clip, oldest first:"}]
+    for frame in frames:
+        content.append({"type": "image_url",
+                        "image_url": {"url": encode_frame(frame, client.max_side, client.jpeg_quality)}})
+    content.append({"type": "text", "text": f"Objects listed: {', '.join(result.objects) or '(none)'}\n"
+                                            f"Description: {result.description}"})
+    payload = {"model": client.model,
+               "messages": [{"role": "system", "content": JUDGE_PROMPT},
+                            {"role": "user", "content": content}],
+               "max_tokens": client.max_tokens, "temperature": 0.0, **client.extra_body}
+    text, latency = client._chat(payload)
+    verdict = parse_verdict(text)
+    verdict.latency = latency
+    return verdict
+
+
+def run_judge(results: list[Result], video: str, cfg: dict) -> list[Verdict]:
+    import cv2
+
+    client = make_judge(cfg)
+    judged_models = {r.model for r in results if r.model}
+    print(f"\nAI JUDGE: {client.model} at {client.base_url}, {cfg['judge_frames']} frames per description")
+    if client.model in judged_models:
+        print("  Warning: the judge is the same model that wrote the descriptions, so it may be too "
+              "lenient. Set JUDGE_MODEL in settings.py to a different model if you can.")
+    cap = cv2.VideoCapture(video)
+    if not cap.isOpened():
+        sys.exit(f"Could not open the video {video!r}. Give it with --video.")
+    verdicts = []
+    for r in results:
+        frames = frames_between(cap, r.start, r.end, cfg["judge_frames"])
+        try:
+            v = judge_one(client, frames, r) if frames else Verdict(None, [], "no frames at this time")
+        except Exception as exc:
+            v = Verdict(None, [], f"judge request failed: {exc}")
+        verdicts.append(v)
+        mark = "?" if v.score is None else str(v.score)
+        print(f"\n[{fmt(r.start)}-{fmt(r.end)}] score {mark}/2   {r.description[:110]}")
+        if v.unsupported:
+            print(f"  unsupported: {'; '.join(v.unsupported)}")
+        if v.reason:
+            print(f"  judge: {v.reason}")
+    cap.release()
+    return verdicts
+
+
+def report_judge(verdicts: list[Verdict]) -> None:
+    scored = [v for v in verdicts if v.score is not None]
+    if not scored:
+        print("Judge score:      - (no usable judge replies)")
+        return
+    hallucinated = sum(1 for v in scored if v.unsupported)
+    print(f"Judge score:      {statistics.mean(v.score for v in scored):.2f} / 2   "
+          f"({sum(v.score == 2 for v in scored)} correct, {sum(v.score == 1 for v in scored)} partly, "
+          f"{sum(v.score == 0 for v in scored)} wrong)")
+    print(f"Hallucination:    {pct(hallucinated, len(scored))} of descriptions have an unsupported claim")
+    if len(scored) < len(verdicts):
+        print(f"  ({len(verdicts) - len(scored)} descriptions could not be judged)")
+
+
+def write_judged(path: str, results: list[Result], verdicts: list[Verdict]) -> None:
     with open(path, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["start", "end", "what_happens", "recall", "precision", "missed", "invented",
-                    "descriptions", "score_0_to_2"])
-        for s in scores:
-            seg = s.segment
-            n_listed = len(s.correct) + len(s.invented)
-            w.writerow([fmt(seg.start), fmt(seg.end), seg.happens,
-                        f"{len(s.found)}/{len(seg.objects)}", f"{len(s.correct)}/{n_listed}",
-                        names(s.missed), ", ".join(s.invented),
-                        "\n".join(f"[{fmt(r.start)}] {r.description}" for r in s.results), ""])
+        w.writerow(["start", "end", "objects", "description", "judge_score", "unsupported", "judge_reason",
+                    "my_score"])
+        for r, v in zip(results, verdicts):
+            w.writerow([fmt(r.start), fmt(r.end), ", ".join(r.objects), r.description,
+                        "" if v.score is None else v.score, "; ".join(v.unsupported), v.reason, ""])
 
 
-def read_scores(path: str) -> None:
+def check_judge(path: str) -> None:
+    """Compare the judge's scores with yours (the my_score column)."""
     with open(path, encoding="utf-8-sig", newline="") as f:
-        values = [row.get("score_0_to_2", "").strip() for row in csv.DictReader(f)]
-    filled = [float(v) for v in values if v]
-    if not filled:
-        print(f"\nDescription score: no scores filled in yet in {path}")
-        return
-    print(f"\nDescription score: {statistics.mean(filled):.2f} out of 2 "
-          f"({len(filled)} of {len(values)} parts scored)")
+        rows = [(r.get("judge_score", "").strip(), r.get("my_score", "").strip()) for r in csv.DictReader(f)]
+    pairs = [(int(j), int(m)) for j, m in rows if j.isdigit() and m.isdigit()]
+    if not pairs:
+        sys.exit(f"{path}: no rows with both judge_score and my_score. Fill in my_score (0, 1 or 2) first.")
+    same = sum(j == m for j, m in pairs)
+    close = sum(abs(j - m) <= 1 for j, m in pairs)
+    print(f"Judge vs you on {len(pairs)} descriptions:")
+    print(f"  same score:   {pct(same, len(pairs))}")
+    print(f"  within 1:     {pct(close, len(pairs))}")
+    print(f"  judge higher: {sum(j > m for j, m in pairs)}   judge lower: {sum(j < m for j, m in pairs)}")
+    if sum(j > m for j, m in pairs) > sum(j < m for j, m in pairs):
+        print("  The judge tends to be more lenient than you.")
 
+
+# ---------------------------------------------------------------- main
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("key", help="answer key CSV")
-    p.add_argument("results", help="the LOG file (.jsonl) or a .txt with text copied from the terminal")
-    p.add_argument("--sheet", help="also write a sheet for scoring descriptions by hand (0-2) to this CSV")
-    p.add_argument("--scores", help="a filled-in scoring sheet, to include your description scores")
+    p.add_argument("files", nargs="*", help="the results (LOG .jsonl or terminal .txt); "
+                                            "an answer key .csv here works too, as in older versions")
+    p.add_argument("--key", help="answer key CSV, for object recall and precision")
+    p.add_argument("--judge", action="store_true", help="let an AI judge check every description against the video")
+    p.add_argument("--video", help="the video file (normally read from the log)")
+    p.add_argument("--settings", help="settings file with the judge settings (default: settings.py)")
+    p.add_argument("--check", metavar="JUDGED_CSV", help="compare the judge's scores with your my_score column")
     args = p.parse_args()
 
-    key = load_key(args.key)
-    results, exact = load_results(args.results)
-    scores = score(key, results)
-    report(scores, results, exact, key)
-
-    if args.scores:
-        read_scores(args.scores)
-    if args.sheet:
-        if Path(args.sheet).exists():
-            print(f"\nScoring sheet already exists: {args.sheet} (not overwritten)")
+    if args.check:
+        check_judge(args.check)
+        return
+    key_path = args.key
+    results_path = None
+    for f in args.files:
+        if f.lower().endswith(".csv") and not key_path:
+            key_path = f
         else:
-            write_sheet(args.sheet, scores)
-            print(f"\nScoring sheet: {args.sheet}  (fill in score_0_to_2, then add --scores {args.sheet})")
+            results_path = f
+    if not results_path:
+        p.error("give the results file (results/....jsonl)")
+    if not key_path and not args.judge:
+        p.error("nothing to do: add --judge, or --key <answer key>, or both")
+
+    results, exact = load_results(results_path)
+
+    if key_path:
+        key = load_key(key_path)
+        report_objects(score(key, results))
+
+    verdicts = None
+    if args.judge:
+        cfg, _ = judge_settings(args.settings)
+        video = args.video or next((r.source for r in results if r.source), None)
+        if not video or (not os.path.isfile(video) and not video.isdigit()):
+            sys.exit("The judge needs the video file: add --video <path to the video>.")
+        verdicts = run_judge(results, video, cfg)
+        judged = str(Path(results_path).with_name(Path(results_path).stem + "_judged.csv"))
+        write_judged(judged, results, verdicts)
+
+    print("\n" + "=" * 60)
+    if verdicts is not None:
+        report_judge(verdicts)
+    if key_path:
+        scores = score(key, results)
+        found = sum(len(s.found) for s in scores)
+        real = sum(len(s.segment.objects) for s in scores)
+        correct = sum(len(s.correct) for s in scores)
+        listed = sum(len(s.correct) + len(s.invented) for s in scores)
+        print(f"Object recall:    {pct(found, real)}   (found / real)")
+        print(f"Object precision: {pct(correct, listed)}   (real / listed)")
+    latencies = [r.latency for r in results if r.latency is not None]
+    if latencies:
+        print(f"Latency:          avg {statistics.mean(latencies):.1f} s, median {statistics.median(latencies):.1f} s, "
+              f"max {max(latencies):.1f} s  ({len(latencies)} answers)")
+    if exact and key_path:
+        print(f"Coverage:         {100 * coverage(key, results):.0f}% of the video analysed")
+    elif not exact:
+        print("Coverage:         needs the LOG file (the terminal rounds times to whole seconds)")
+    if verdicts is not None:
+        print(f"\nJudge scores saved to {judged}\n"
+              f"Score some rows yourself in its my_score column (0, 1 or 2), then run:\n"
+              f"  python evaluate.py --check {judged}")
 
 
 if __name__ == "__main__":

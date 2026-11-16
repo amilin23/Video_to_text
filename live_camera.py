@@ -86,11 +86,16 @@ DEFAULTS: dict[str, Any] = {
     "display": True,
     "window_width": 1280,
     "max_runtime": 0.0,
+    # The AI judge used by evaluate.py. None = the same server / model / extra fields as above.
+    "judge_base_url": None,
+    "judge_model": None,
+    "judge_extra_body": None,
+    "judge_frames": 4,
 }
 # Settings that can also come from environment variables / .env.
 ENV_VARS = {"base_url": "QWEN_BASE_URL", "model": "QWEN_MODEL"}
 # Settings where None, "" or False means "off".
-OPTIONAL_STR = {"yolo", "log", "srt"}
+OPTIONAL_STR = {"yolo", "log", "srt", "judge_base_url", "judge_model"}
 SETTINGS_NAME = "settings.py"
 
 
@@ -166,7 +171,7 @@ def check_settings(raw: dict[str, Any], path: str) -> dict[str, Any]:
                 value = "yolov8n.pt"
             elif not isinstance(value, str):
                 bad(name, "text in quotes, or None for off")
-        elif key == "extra_body":
+        elif key in ("extra_body", "judge_extra_body"):
             if not isinstance(value, dict):
                 bad(name, "a dict like {'enable_thinking': False}, or None")
             value = value or None
@@ -365,8 +370,10 @@ class Entry:
 class Results:
     """Prints results and writes them to the JSON-lines log and the subtitle file."""
 
-    def __init__(self, model: str, log_path: str | None, srt_path: str | None) -> None:
+    def __init__(self, model: str, log_path: str | None, srt_path: str | None,
+                 source: str | None = None) -> None:
         self.model = model
+        self.source = source
         self.log_path = log_path
         self.srt_path = srt_path
         self.entries: list[Entry] = []
@@ -390,6 +397,8 @@ class Results:
                 "description": result.description,
                 "latency_s": round(result.latency_s, 2),
             }
+            if self.source is not None:
+                record["source"] = os.path.abspath(self.source) if os.path.isfile(self.source) else self.source
             if video_start is not None:
                 record["video_start_s"] = round(video_start, 2)
                 record["video_end_s"] = round(video_end if video_end is not None else video_start, 2)
@@ -854,7 +863,7 @@ def main() -> None:
     if warning:
         print(f"Warning: {warning}", file=sys.stderr)
 
-    results = Results(args.model, args.log, args.srt)
+    results = Results(args.model, args.log, args.srt, source=args.source)
     fps, frame_count = cap.get(cv2.CAP_PROP_FPS), cap.get(cv2.CAP_PROP_FRAME_COUNT)
     video_duration = frame_count / fps if not is_camera and fps > 0 and frame_count > 0 else None
     try:
