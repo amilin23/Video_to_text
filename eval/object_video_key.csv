@@ -1,0 +1,9 @@
+# Answer key for the object video (bottle, mug, laptop).
+# DRAFT: written from a few frames of the recording. Check it against the video and correct it.
+# objects: separated by ";"   other accepted names: separated by "|"
+start,end,objects,what_happens
+0:00,0:05,bottle|thermos; floor|tile; shadow,camera tilts up from the tiled floor to a white bottle with a strap
+0:05,0:10,mug|cup; spoon; pen; coin; table|desk; laptop,camera moves to a small table with a mug, pens, coins and a laptop
+0:10,0:15,pen; coin; mug|cup; spoon; table|desk; laptop,close view of the pens and coins next to the mug
+0:15,0:20,laptop|computer; table|desk; keyboard,camera moves to the open laptop showing a grid of cat pictures
+0:20,0:26,laptop|computer; table|desk; keyboard; cat|animal|image,camera stays on the laptop screen with cat pictures
