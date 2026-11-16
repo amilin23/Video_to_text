@@ -1,13 +1,12 @@
-import os
 from pathlib import Path
 
 import pytest
 
 import live_camera
-from live_camera import load_config, parse_args
+from live_camera import load_settings, parse_args
 from qwen_client import SYSTEM_PROMPT
 
-REPO_CONFIG = Path(__file__).resolve().parent.parent / "config.toml"
+REPO_SETTINGS = Path(__file__).resolve().parent.parent / "settings.py"
 
 
 @pytest.fixture(autouse=True)
@@ -18,24 +17,30 @@ def clean_env(monkeypatch, tmp_path):
 
 
 def write(tmp_path, text):
-    path = tmp_path / "config.toml"
+    path = tmp_path / "settings.py"
     path.write_text(text, encoding="utf-8")
     return str(path)
 
 
-def test_shipped_config_matches_built_in_defaults():
-    # The config.toml in the repo should describe the same behaviour as the defaults.
-    config = load_config(str(REPO_CONFIG))
-    for key, value in config.items():
-        assert value == live_camera.DEFAULTS[key], key
-    assert config["system_prompt"] == SYSTEM_PROMPT
+def test_shipped_settings_load_and_are_valid():
+    settings = load_settings(str(REPO_SETTINGS))
+    assert settings["system_prompt"] == SYSTEM_PROMPT
+    # BASE_URL and MODEL are None in the shipped file, so .env decides them.
+    assert "base_url" not in settings and "model" not in settings
+    assert settings["extra_body"] == {"enable_thinking": False,
+                                      "chat_template_kwargs": {"enable_thinking": False}}
+    for key, value in settings.items():
+        if key != "extra_body":
+            assert value == live_camera.DEFAULTS[key], key
 
 
-def test_config_values_are_used(tmp_path):
-    path = write(tmp_path, 'source = \'C:\\videos\\clip.mp4\'\nframes = 2\nsegment = 10\n'
-                           'display = false\nlog = ""\n[extra_body]\nchat_template_kwargs = { enable_thinking = false }\n')
-    args = parse_args(["--config", path])
-    assert args.source == "C:\\videos\\clip.mp4"
+def test_settings_values_are_used(tmp_path):
+    path = write(tmp_path, "SOURCE = 'C:/videos/clip.mp4'\nFRAMES = 2\nSEGMENT = 10\n"
+                           "DISPLAY = False\nLOG = None\n"
+                           "EXTRA_BODY = {'chat_template_kwargs': {'enable_thinking': False}}\n"
+                           "import os  # lowercase names are ignored\nhelper = 3\n")
+    args = parse_args(["--settings", path])
+    assert args.source == "C:/videos/clip.mp4"
     assert args.frames == 2
     assert args.segment == 10.0
     assert args.display is False
@@ -43,36 +48,36 @@ def test_config_values_are_used(tmp_path):
     assert args.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
-def test_command_line_overrides_config(tmp_path):
-    path = write(tmp_path, "frames = 2\ndisplay = false\n")
-    args = parse_args(["--config", path, "--frames", "6", "--display"])
+def test_command_line_overrides_settings(tmp_path):
+    path = write(tmp_path, "FRAMES = 2\nDISPLAY = False\n")
+    args = parse_args(["--settings", path, "--frames", "6", "--display"])
     assert args.frames == 6
     assert args.display is True
 
 
-def test_config_found_in_current_folder(tmp_path):
-    write(tmp_path, "frames = 3\n")
+def test_settings_found_in_current_folder(tmp_path):
+    write(tmp_path, "FRAMES = 3\n")
     assert parse_args([]).frames == 3
 
 
-def test_config_overrides_env_model(tmp_path, monkeypatch):
+def test_none_keeps_env_value(tmp_path, monkeypatch):
     monkeypatch.setenv("QWEN_MODEL", "from-env")
-    write(tmp_path, "frames = 4\n")
-    assert parse_args([]).model == "from-env"  # config doesn't set model: env is used
-    write(tmp_path, 'model = "from-config"\n')
-    assert parse_args([]).model == "from-config"
+    write(tmp_path, "MODEL = None\n")
+    assert parse_args([]).model == "from-env"
+    write(tmp_path, "MODEL = 'from-settings'\n")
+    assert parse_args([]).model == "from-settings"
 
 
 @pytest.mark.parametrize("text, message", [
-    ("frams = 2\n", "unknown setting 'frams'"),
-    ('frames = "two"\n', "'frames' should be a whole number"),
-    ("display = 1\n", "'display' should be true or false"),
-    ('api_key = "x"\n', "don't put the API key here"),
-    ("source = 'C:\\videos\nframes = 2\n", None),
+    ("FRAMS = 2\n", "Did you mean FRAMES?"),
+    ("FRAMES = 'two'\n", "FRAMES should be a whole number"),
+    ("DISPLAY = 1\n", "DISPLAY should be True or False"),
+    ("API_KEY = 'x'\n", "don't put the API key here"),
+    ("SOURCE = 'C:\\videos\\new.mp4'\n", "Use forward slashes"),
+    ("FRAMES = 4,\nEXTRA_BODY = {'a': 1\n", "line"),
 ])
-def test_bad_config_gives_clear_error(tmp_path, text, message):
+def test_bad_settings_give_clear_error(tmp_path, text, message):
     path = write(tmp_path, text)
     with pytest.raises(SystemExit) as exc:
-        load_config(path)
-    if message:
-        assert message in str(exc.value)
+        load_settings(path)
+    assert message in str(exc.value)

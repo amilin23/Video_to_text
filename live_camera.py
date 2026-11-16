@@ -15,6 +15,7 @@ Keys in the window:
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import math
 import os
@@ -56,7 +57,7 @@ def load_env_files() -> None:
         load_dotenv(path, override=False)
 
 
-# Built-in defaults. config.toml overrides these, and command-line options override both.
+# Built-in defaults. settings.py overrides these, and command-line options override both.
 DEFAULTS: dict[str, Any] = {
     "source": "0",
     "base_url": "http://localhost:11434/v1",
@@ -83,101 +84,115 @@ DEFAULTS: dict[str, Any] = {
 }
 # Settings that can also come from environment variables / .env.
 ENV_VARS = {"base_url": "QWEN_BASE_URL", "model": "QWEN_MODEL"}
-# Settings where "" (or false) in config.toml means "off".
+# Settings where None, "" or False means "off".
 OPTIONAL_STR = {"yolo", "log", "srt"}
-CONFIG_NAME = "config.toml"
+SETTINGS_NAME = "settings.py"
 
 
-def find_config(explicit: str | None) -> str | None:
+def find_settings(explicit: str | None) -> str | None:
     if explicit:
         if not os.path.isfile(explicit):
-            sys.exit(f"Config file not found: {explicit}")
+            sys.exit(f"Settings file not found: {explicit}")
         return explicit
     for folder in (os.getcwd(), os.path.dirname(os.path.abspath(__file__))):
-        path = os.path.join(folder, CONFIG_NAME)
+        path = os.path.join(folder, SETTINGS_NAME)
         if os.path.isfile(path):
             return path
     return None
 
 
-def load_config(path: str) -> dict[str, Any]:
-    """Read config.toml and check every key and value type against DEFAULTS."""
-    try:
-        import tomllib  # Python 3.11+
-    except ModuleNotFoundError:
-        try:
-            import tomli as tomllib  # older Pythons: pip install tomli
-        except ModuleNotFoundError:
-            sys.exit("Reading config.toml needs Python 3.11+, or: pip install tomli")
-    try:
-        with open(path, "rb") as f:
-            raw = tomllib.load(f)
-    except tomllib.TOMLDecodeError as exc:
-        sys.exit(f"Could not read {path}: {exc}\n"
-                 "Tip: for Windows paths use single quotes, e.g. source = 'C:\\videos\\clip.mp4'")
+def load_settings(path: str) -> dict[str, Any]:
+    """Run settings.py and collect its UPPERCASE names, e.g. FRAMES = 4 -> frames."""
+    import importlib.util
 
-    def bad(key: str, expected: str) -> None:
-        sys.exit(f"{path}: '{key}' should be {expected}, got {raw[key]!r}")
+    spec = importlib.util.spec_from_file_location("_video_to_text_settings", path)
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except SyntaxError as exc:
+        line = (exc.text or "").strip()
+        sys.exit(f"{path}, line {exc.lineno}: {exc.msg}\n    {line}\n"
+                 "Check the quotes, brackets and commas on that line.")
+    except Exception as exc:
+        sys.exit(f"Could not load {path}: {type(exc).__name__}: {exc}")
+    raw = {name: value for name, value in vars(module).items()
+           if name.isupper() and not name.startswith("_")}
+    return check_settings(raw, path)
 
-    config: dict[str, Any] = {}
-    for key, value in raw.items():
-        if key == "api_key":
+
+def check_settings(raw: dict[str, Any], path: str) -> dict[str, Any]:
+    """Check every setting's name and type against DEFAULTS. None = keep the default."""
+    def bad(name: str, expected: str) -> None:
+        sys.exit(f"{path}: {name} should be {expected}, but it is {raw[name]!r}")
+
+    settings: dict[str, Any] = {}
+    for name, value in raw.items():
+        key = name.lower()
+        if key in ("api_key", "qwen_api_key"):
             sys.exit(f"{path}: don't put the API key here. Put QWEN_API_KEY in your .env file instead.")
         if key not in DEFAULTS:
-            sys.exit(f"{path}: unknown setting '{key}'. Valid settings: {', '.join(DEFAULTS)}")
+            close = difflib.get_close_matches(key, DEFAULTS, n=1)
+            hint = f" Did you mean {close[0].upper()}?" if close else ""
+            sys.exit(f"{path}: unknown setting {name}.{hint}\n"
+                     f"Valid settings: {', '.join(k.upper() for k in DEFAULTS)}")
+        if value is None:
+            continue  # None = use the default (or the value from .env)
         default = DEFAULTS[key]
         if key == "source" and isinstance(value, int) and not isinstance(value, bool):
             value = str(value)
+        if key == "source" and isinstance(value, str) and any(c in value for c in "\a\b\f\n\r\t\v"):
+            sys.exit(f"{path}: SOURCE {value!r} has a backslash that Python reads as a special character.\n"
+                     "Use forward slashes instead, e.g. SOURCE = 'C:/videos/clip.mp4'")
         if key in OPTIONAL_STR:
             if value is False or value == "":
-                value = None
-            elif key == "yolo" and value is True:
+                continue
+            if key == "yolo" and value is True:
                 value = "yolov8n.pt"
             elif not isinstance(value, str):
-                bad(key, 'a text value in quotes, or "" for off')
+                bad(name, "text in quotes, or None for off")
         elif key == "extra_body":
             if not isinstance(value, dict):
-                bad(key, "a table: [extra_body]")
+                bad(name, "a dict like {'enable_thinking': False}, or None")
             value = value or None
         elif isinstance(default, bool):
             if not isinstance(value, bool):
-                bad(key, "true or false")
+                bad(name, "True or False")
         elif isinstance(default, float):
             if isinstance(value, bool) or not isinstance(value, (int, float)):
-                bad(key, "a number")
+                bad(name, "a number")
             value = float(value)
         elif isinstance(default, int):
             if isinstance(value, bool) or not isinstance(value, int):
-                bad(key, "a whole number")
+                bad(name, "a whole number, like 4")
         elif isinstance(default, str) and not isinstance(value, str):
-            bad(key, "a text value in quotes")
-        config[key] = value
-    return config
+            bad(name, "text in quotes")
+        settings[key] = value
+    return settings
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    # First pass: only find out which config file to use.
+    # First pass: only find out which settings file to use.
     pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--config")
+    pre.add_argument("--settings")
     pre_args, _ = pre.parse_known_args(argv)
-    config_path = find_config(pre_args.config)
-    config = load_config(config_path) if config_path else {}
+    config_path = find_settings(pre_args.settings)
+    config = load_settings(config_path) if config_path else {}
 
-    # Defaults < environment / .env < config.toml < command line.
+    # Defaults < environment / .env < settings.py < command line.
     settings = dict(DEFAULTS)
     for key, var in ENV_VARS.items():
         if os.environ.get(var):
             if key in config and config[key] != os.environ[var]:
-                print(f"Note: using {key} = {config[key]!r} from {CONFIG_NAME} "
+                print(f"Note: using {key.upper()} = {config[key]!r} from {SETTINGS_NAME} "
                       f"({var} in your environment/.env is ignored).", file=sys.stderr)
             settings[key] = os.environ[var]
     settings.update(config)
 
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
-                                epilog=f"All settings can also be set in {CONFIG_NAME}; "
+                                epilog=f"All settings can also be set in {SETTINGS_NAME}; "
                                        "command-line options override it.")
     on_off = argparse.BooleanOptionalAction
-    p.add_argument("--config", help=f"settings file to use (default: {CONFIG_NAME} in this folder)")
+    p.add_argument("--settings", help=f"settings file to use (default: {SETTINGS_NAME} in this folder)")
     p.add_argument("--source", help="camera index (0 = default webcam) or a video file / stream URL")
     p.add_argument("--base-url", help="OpenAI-compatible API base URL")
     p.add_argument("--model", help="model name as the server knows it")
@@ -217,7 +232,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="live mode: stop after this many seconds (0 = run until you quit)")
     p.set_defaults(**settings)
     args = p.parse_args(argv)
-    args.config = config_path
+    args.settings = config_path
 
     if args.frames < 1:
         p.error("frames must be at least 1")
@@ -671,7 +686,7 @@ def main() -> None:
                         max_tokens=args.max_tokens, temperature=args.temperature,
                         timeout_s=args.timeout, extra_body=args.extra_body,
                         system_prompt=args.system_prompt, jpeg_quality=args.jpeg_quality)
-    print(f"Settings: {args.config or 'built-in defaults (no ' + CONFIG_NAME + ' found)'}", flush=True)
+    print(f"Settings: {args.settings or 'built-in defaults (no ' + SETTINGS_NAME + ' found)'}", flush=True)
     warning = client.check_server()
     if warning:
         print(f"Warning: {warning}", file=sys.stderr)

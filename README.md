@@ -96,7 +96,7 @@ makes it easy to spot mistakes.
 
 ## Command-line options
 
-Each one matches a setting in `config.toml` (`--frame-gap` = `frame_gap`).
+Each one matches a setting in `settings.py` (`--frame-gap` = `FRAME_GAP`).
 
 
 | Option | Default | What it does |
@@ -114,29 +114,34 @@ Each one matches a setting in `config.toml` (`--frame-gap` = `frame_gap`).
 | `--no-display` | off | No window, just print results |
 | `--extra-body JSON` | none | Extra request fields, e.g. turn off thinking on vLLM: `'{"chat_template_kwargs": {"enable_thinking": false}}'` |
 
-## Settings (`config.toml`)
+## Settings (`settings.py`)
 
-All settings are in **`config.toml`**, with a comment explaining each one.
-Edit the values, save, and run `python live_camera.py`. For example, to
-analyse a whole video file with 2 frames per 10-second segment:
+All settings are in **`settings.py`**, a plain Python file with a comment
+explaining each one. Change a value, save, and run `python live_camera.py`.
+For example, to analyse a whole video file with 2 frames per 10-second piece:
 
-```toml
-source = 'C:\videos\clip.mp4'   # single quotes for Windows paths
-full = true
-frames = 2
-segment = 10
-srt = "clip.srt"
+```python
+SOURCE = 'C:/videos/clip.mp4'   # forward slashes for Windows paths
+FULL = True
+FRAMES = 2
+SEGMENT = 10
+SRT = 'clip.srt'
 ```
 
-Any command-line option overrides the file for that run only, e.g.
-`python live_camera.py --frames 6`. Use `--config other.toml` to switch
-between saved setups. At startup the app prints which config file it loaded.
+- Text goes in quotes, yes/no is `True` / `False`, and `None` means "use the default".
+- `BASE_URL = None` and `MODEL = None` use `QWEN_BASE_URL` / `QWEN_MODEL` from your `.env`.
+- A mistake gives a clear message: a typo like `FRAMS = 2` says *Did you mean FRAMES?*,
+  and a syntax error points to the line.
 
-The order of priority is: command line > `config.toml` > environment / `.env` > built-in defaults.
+Any command-line option overrides the file for that run only, e.g.
+`python live_camera.py --frames 6`. Use `--settings other_settings.py` to switch
+between saved setups. At startup the app prints which settings file it loaded.
+
+The order of priority is: command line > `settings.py` > environment / `.env` > built-in defaults.
 
 ## API key (`.env`)
 
-The key does **not** go in `config.toml`. Copy the template and fill it in:
+The key does **not** go in `settings.py`. Copy the template and fill it in:
 
 ```bash
 cp .env.example .env
