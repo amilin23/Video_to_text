@@ -61,7 +61,7 @@ USE_PREVIOUS = True
 
 # Instructions given to the model. The app still asks for the answer as JSON
 # with "objects" and "description", so keep it about describing frames.
-# The rules below keep answers short (good for CIDEr), stop claims about things that
+# The rules below keep answers short, stop claims about things that
 # aren't there, and keep object names consistent.
 SYSTEM_PROMPT = (
     "You describe short clips of video. You receive a few frames from the clip, oldest first. "
