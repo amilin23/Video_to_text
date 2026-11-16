@@ -34,6 +34,13 @@ SUMMARY_PROMPT = (
     "descriptions say and do not add anything. Reply with the summary only."
 )
 
+ASK_PROMPT = (
+    "You answer spoken questions about what a camera or video shows. You get the latest frames, "
+    "oldest first, and the question. Answer from what is visible in the frames. Reply in 1 or 2 "
+    "short sentences that sound natural when read aloud: no lists, no markdown. Reply in the same "
+    "language as the question. If the frames don't show the answer, say that you can't see it."
+)
+
 RESPONSE_FORMAT = (
     "Reply with JSON only, no other text, in exactly this shape: "
     '{"objects": ["mug", "pen"], '
@@ -121,6 +128,14 @@ class QwenClient:
         if api_key:
             self.session.headers["Authorization"] = f"Bearer {api_key}"
 
+    def clone(self) -> "QwenClient":
+        """A copy with its own connection, for use from another thread."""
+        other = QwenClient.__new__(QwenClient)
+        other.__dict__.update(self.__dict__)
+        other.session = requests.Session()
+        other.session.headers.update(self.session.headers)
+        return other
+
     def check_server(self) -> str | None:
         """Return a warning message if the server or model looks unavailable."""
         try:
@@ -184,6 +199,29 @@ class QwenClient:
                 "(model returned no answer - try a higher --max-tokens or turn off thinking)"
             )
         return Analysis(objects=objects, description=description, latency_s=latency, raw=text)
+
+    def ask(self, frames: Sequence[np.ndarray], question: str, context: str | None = None,
+            max_tokens: int = 300) -> tuple[str, float]:
+        """Answer a question about the frames, in a short spoken style."""
+        content: list[dict[str, Any]] = [{"type": "text", "text": f"{len(frames)} latest frames, oldest first:"}]
+        for frame in frames:
+            content.append({"type": "image_url",
+                            "image_url": {"url": encode_frame(frame, self.max_side, self.jpeg_quality)}})
+        text = f"Question: {question}"
+        if context:
+            text = f"The last description of the video was: {context!r}\n" + text
+        content.append({"type": "text", "text": text})
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": ASK_PROMPT}, {"role": "user", "content": content}],
+            "max_tokens": max(max_tokens, self.max_tokens),
+            "temperature": self.temperature,
+            **self.extra_body,
+        }
+        answer, latency = self._chat(payload)
+        if "</think>" in answer:
+            answer = answer.rsplit("</think>", 1)[1]
+        return answer.strip(), latency
 
     def summarize(self, parts: Sequence[tuple[str, str]], max_tokens: int = 400) -> tuple[str, float]:
         """Turn timed descriptions [(time range, description), ...] into one short paragraph."""

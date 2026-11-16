@@ -86,6 +86,16 @@ DEFAULTS: dict[str, Any] = {
     "display": True,
     "window_width": 1280,
     "max_runtime": 0.0,
+    # Voice questions (live mode, press V): ElevenLabs speech-to-text and text-to-speech.
+    "voice": True,
+    "voice_id": "21m00Tcm4TlvDq8ikWAM",
+    "tts_model": "eleven_flash_v2_5",
+    "stt_model": "scribe_v1",
+    "voice_language": None,
+    "speak_answers": True,
+    "max_question_seconds": 15.0,
+    "pause_while_asking": True,
+    "elevenlabs_base_url": None,
     # The AI judge used by evaluate.py. None = the same server / model as above; no extra fields.
     "judge_base_url": None,
     "judge_model": None,
@@ -95,7 +105,7 @@ DEFAULTS: dict[str, Any] = {
 # Settings that can also come from environment variables / .env.
 ENV_VARS = {"base_url": "QWEN_BASE_URL", "model": "QWEN_MODEL"}
 # Settings where None, "" or False means "off".
-OPTIONAL_STR = {"yolo", "log", "srt", "judge_base_url", "judge_model"}
+OPTIONAL_STR = {"yolo", "log", "srt", "judge_base_url", "judge_model", "voice_language", "elevenlabs_base_url"}
 SETTINGS_NAME = "settings.py"
 
 
@@ -409,6 +419,14 @@ class Results:
             text = (f"Objects: {objects}\n" if result.objects else "") + result.description
             self.entries.append(Entry(video_start, srt_end, text))
 
+    def add_question(self, question: str, answer: str, video_pos: float | None) -> None:
+        if not self.log_path:
+            return
+        path = os.path.splitext(self.log_path)[0] + "_questions.txt"
+        when = fmt_time(video_pos) if video_pos is not None else datetime.now().strftime("%H:%M:%S")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"[{when}] Q: {question}\n         A: {answer}\n")
+
     def write_srt(self, video_duration: float | None = None) -> None:
         if not self.srt_path or not self.entries:
             return
@@ -530,6 +548,40 @@ def fit_for_display(frame: np.ndarray, max_width: int) -> np.ndarray:
     return frame.copy()
 
 
+def draw_qa(frame: np.ndarray, lines: list[tuple[str, tuple[int, int, int]]]) -> None:
+    """The voice question and answer, in a box under the status line."""
+    if not lines:
+        return
+    font, scale = cv2.FONT_HERSHEY_SIMPLEX, 0.55
+    w = frame.shape[1]
+    wrapped = [(part, color) for text, color in lines
+               for part in (textwrap.wrap(ascii_text(text), max(20, w // 9)) or [""])]
+    y0, line_h = 34, 22
+    box = frame.copy()
+    cv2.rectangle(box, (0, y0), (w, y0 + line_h * len(wrapped) + 10), (40, 20, 0), -1)
+    cv2.addWeighted(box, 0.7, frame, 0.3, 0, dst=frame)
+    for i, (text, color) in enumerate(wrapped):
+        cv2.putText(frame, text, (10, y0 + line_h * (i + 1)), font, scale, color, 1, cv2.LINE_AA)
+
+
+def qa_lines(asker, shown_until: float, now: float) -> list[tuple[str, tuple[int, int, int]]]:
+    if asker is None:
+        return []
+    white, yellow, red = (255, 255, 255), (0, 255, 255), (0, 0, 255)
+    if asker.state == "listening":
+        return [(f"Listening... press V when you're done ({asker.recorder.seconds:.0f}s)", yellow)]
+    lines = []
+    if asker.question:
+        lines.append((f"You: {asker.question}", white))
+    if asker.state == "thinking":
+        lines.append(("Thinking...", yellow) if asker.question else ("Listening to your question...", yellow))
+    elif asker.answer and (asker.state == "speaking" or now < shown_until):
+        lines.append((f"Answer: {asker.answer}", (0, 255, 0)))
+    if asker.error and now < shown_until:
+        lines.append((f"Error: {asker.error}", red))
+    return lines if (asker.busy or now < shown_until) else []
+
+
 def quit_pressed(delay_ms: int = 1) -> bool:
     return (cv2.waitKey(delay_ms) & 0xFF) in (ord("q"), 27)
 
@@ -582,6 +634,36 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
     started = time.monotonic()
     frame_index = 0
     skipped = 0
+    frame = None
+    video_pos: float | None = None
+    asker = None            # created on the first press of V
+    asker_error: str | None = None
+    qa_until = 0.0           # keep the last answer on screen until this time
+    was_busy = False
+    pause_t0: float | None = None
+
+    def make_asker():
+        nonlocal asker_error
+        from voice import Asker, ElevenLabs, VoiceError
+        try:
+            eleven = ElevenLabs(os.environ.get("ELEVENLABS_API_KEY"), args.voice_id, args.tts_model,
+                                args.stt_model, args.voice_language, args.elevenlabs_base_url)
+        except VoiceError as exc:
+            asker_error = str(exc)
+            print(f"Error: {exc}", file=sys.stderr, flush=True)
+            return None
+        ask_client = client.clone()
+
+        def ask(question, frames):
+            if not frames:
+                return "I can't see anything yet."
+            context = current.description if current else None
+            answer, _ = ask_client.ask(frames, question, context)
+            return answer
+
+        return Asker(eleven, ask, speak_answers=args.speak_answers, max_seconds=args.max_question_seconds,
+                     on_done=lambda q, a: results.add_question(q, a, video_pos),
+                     player=lambda mp3: __import__("voice").play_mp3(mp3, project_path("results")))
 
     def handle(item: Analysis | Exception) -> None:
         nonlocal current, error, current_span, current_sent_at
@@ -599,34 +681,46 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
 
     try:
         while True:
-            if file_fps > 0:
-                # Behind schedule? Skip frames (grab() avoids the colour conversion) to catch up.
-                behind = int((time.monotonic() - started) * file_fps) - frame_index
-                while behind > 1 and cap.grab():
-                    frame_index += 1
-                    skipped += 1
-                    behind -= 1
-            ok, frame = cap.read()
-            if not ok:
-                if is_camera:
-                    print("Camera stopped sending frames.", file=sys.stderr)
-                break
-            now = time.monotonic()
-            video_pos = frame_index / file_fps if file_fps > 0 else None
-            frame_index += 1
+            asking = asker is not None and asker.busy
+            paused = asking and args.pause_while_asking and file_fps > 0 and frame is not None
+            if paused:
+                # Hold the video on the current frame while the question is asked and answered.
+                if pause_t0 is None:
+                    pause_t0 = time.monotonic()
+                time.sleep(0.03)  # nothing new to show; don't spin the CPU
+                now = time.monotonic()
+            else:
+                if pause_t0 is not None:
+                    started += time.monotonic() - pause_t0  # resume where we stopped
+                    pause_t0 = None
+                if file_fps > 0:
+                    # Behind schedule? Skip frames (grab() avoids the colour conversion) to catch up.
+                    behind = int((time.monotonic() - started) * file_fps) - frame_index
+                    while behind > 1 and cap.grab():
+                        frame_index += 1
+                        skipped += 1
+                        behind -= 1
+                ok, frame = cap.read()
+                if not ok:
+                    if is_camera:
+                        print("Camera stopped sending frames.", file=sys.stderr)
+                    break
+                now = time.monotonic()
+                video_pos = frame_index / file_fps if file_fps > 0 else None
+                frame_index += 1
 
-            if file_fps > 0:
-                ahead = started + frame_index / file_fps - now
-                if ahead > 0:
-                    time.sleep(ahead)
-                    now = time.monotonic()
+                if file_fps > 0:
+                    ahead = started + frame_index / file_fps - now
+                    if ahead > 0:
+                        time.sleep(ahead)
+                        now = time.monotonic()
             clock = video_pos if video_pos is not None else now
 
             if yolo is not None and now - last_yolo >= 1 / max(args.yolo_fps, 0.1):
                 detections = run_yolo(yolo, frame, args.yolo_confidence)
                 last_yolo = now
 
-            if clock - last_sample >= args.frame_gap:
+            if not paused and clock - last_sample >= args.frame_gap:
                 labels = frozenset(d[4] for d in detections)
                 buffer.append((clock, frame.copy(), video_pos, labels))
                 last_sample = clock
@@ -636,7 +730,8 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
                 handle(item)
 
             # Automatic runs wait for a full burst of frames; a key press uses what's there.
-            due = auto and len(buffer) == buffer.maxlen and now - last_activity >= args.interval
+            due = (auto and not asking and len(buffer) == buffer.maxlen
+                   and now - last_activity >= args.interval)
             if (due or manual_requested) and buffer and not worker.busy:
                 frames = [b[1] for b in buffer]
                 span = buffer[-1][0] - buffer[0][0]
@@ -657,8 +752,10 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
                 else:
                     status, color = args.model, (255, 255, 255)
                 if video_pos is not None:
-                    status = f"{fmt_time(video_pos)}  " + status
-                status += f"  |  auto {'on' if auto else 'off'}  [space] analyse  [a] auto  [q] quit"
+                    status = f"{fmt_time(video_pos)}  " + ("PAUSED  " if paused else "") + status
+                status += f"  |  auto {'on' if auto else 'off'}  [space] analyse  [a] auto"
+                status += "  [v] ask" if args.voice else ""
+                status += "  [q] quit"
                 display = frame.copy() if detections else frame
                 draw_boxes(display, detections)
                 display = fit_for_display(display, args.window_width)
@@ -669,10 +766,24 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
                 else:
                     about = f"Describes the camera {now - current_sent_at:.0f} s ago"
                 draw_overlay(display, current, status, color, about=about)
+                if asker is not None:
+                    if was_busy and not asker.busy:
+                        qa_until = now + 12  # keep the answer on screen for a while
+                    was_busy = asker.busy
+                    draw_qa(display, qa_lines(asker, qa_until, now))
+                elif asker_error:
+                    draw_qa(display, [(f"Error: {asker_error}", (0, 0, 255))])
                 cv2.imshow(WINDOW, display)
                 key = cv2.waitKey(1) & 0xFF
+                if asker is not None:
+                    asker.tick(lambda: [b[1] for b in buffer])
                 if key in (ord("q"), 27):
                     break
+                if key == ord("v") and args.voice:
+                    if asker is None and asker_error is None:
+                        asker = make_asker()
+                    if asker is not None:
+                        asker.toggle(lambda: [b[1] for b in buffer])
                 if key == ord(" "):
                     manual_requested = True
                 elif key == ord("a"):
@@ -684,6 +795,12 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
     except KeyboardInterrupt:
         pass
 
+    if asker is not None and asker.busy:
+        if asker.state == "listening":
+            asker.recorder.stop()
+        else:
+            print("Waiting for the voice answer to finish...", flush=True)
+            asker.wait(timeout=client.timeout_s)
     if skipped:
         print(f"Skipped {skipped} frames to keep the video at normal speed.", flush=True)
     # Let an in-flight analysis finish so its answer isn't lost.

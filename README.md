@@ -113,6 +113,25 @@ the video in VLC (or most players) and add the subtitle file
 then see each description while the matching part of the video plays, which
 makes it easy to spot mistakes.
 
+## Ask questions by voice (live mode)
+
+Press **V** in the video window, ask a question out loud (Malay or English), and press
+**V** again. The app sends your question to ElevenLabs speech-to-text, shows Qwen the
+latest frames with the question, and speaks the answer with ElevenLabs text-to-speech.
+A video file pauses while you ask, so the answer matches the scene.
+
+Setup:
+
+1. Put your ElevenLabs key in `.env`: `ELEVENLABS_API_KEY=...`
+2. `pip install sounddevice` (microphone and speaker)
+3. FFmpeg must be installed to play the answer (`winget install Gyan.FFmpeg`)
+
+Settings in `settings.py`: `VOICE_ID` (the speaking voice), `TTS_MODEL`, `STT_MODEL`,
+`VOICE_LANGUAGE`, `SPEAK_ANSWERS`, `MAX_QUESTION_SECONDS`, `PAUSE_WHILE_ASKING`.
+Questions and answers are saved next to the log as `<log name>_questions.txt`.
+
+Your recorded question goes to ElevenLabs, and the frames and question go to your Qwen server.
+
 ## How live mode keeps up
 
 - Video files are timed by the position in the video. If processing falls behind

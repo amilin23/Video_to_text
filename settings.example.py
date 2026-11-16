@@ -112,6 +112,34 @@ YOLO_CONFIDENCE = 0.5
 MAX_RUNTIME = 0
 
 
+# ------------------------------------------------------------ voice questions (live mode)
+
+# Press V in the video window, ask a question out loud, press V again.
+# The app listens (ElevenLabs speech-to-text), looks at the latest frames (Qwen),
+# and speaks the answer (ElevenLabs text-to-speech).
+# Needs: ELEVENLABS_API_KEY in .env, pip install sounddevice, and FFmpeg to play the answer.
+VOICE = True
+
+# The ElevenLabs voice that speaks the answers. Find voice IDs in ElevenLabs' Voice Library.
+VOICE_ID = '21m00Tcm4TlvDq8ikWAM'
+
+# ElevenLabs models: a fast multilingual voice, and its speech-to-text model
+TTS_MODEL = 'eleven_flash_v2_5'
+STT_MODEL = 'scribe_v1'
+
+# Language of your questions, e.g. 'ms' (Malay) or 'en'. None = detect automatically
+VOICE_LANGUAGE = None
+
+# Speak the answer out loud (False = only show and print it)
+SPEAK_ANSWERS = True
+
+# Stop listening by itself after this many seconds
+MAX_QUESTION_SECONDS = 15
+
+# Pause a video file while you ask and while it answers, so the answer matches the scene
+PAUSE_WHILE_ASKING = True
+
+
 # ------------------------------------------------------------ full mode (FULL = True)
 
 # Length of each analysed piece of video, in seconds
