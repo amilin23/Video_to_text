@@ -108,3 +108,12 @@ def test_check_judge(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "on 3 descriptions" in out and "same score:   2/3" in out and "more lenient" in out
 
+
+def test_judge_does_not_inherit_the_apps_extra_body():
+    import live_camera
+    from evaluate import make_judge
+    cfg = dict(live_camera.DEFAULTS, model="qwen", extra_body={"chat_template_kwargs": {"enable_thinking": False}})
+    assert make_judge(cfg).extra_body == {}
+    cfg["judge_extra_body"] = {"temperature_boost": 1}
+    assert make_judge(cfg).extra_body == {"temperature_boost": 1}
+

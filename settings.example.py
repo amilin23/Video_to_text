@@ -148,7 +148,9 @@ SRT = None
 JUDGE_BASE_URL = None
 JUDGE_MODEL = None
 
-# Extra request fields for the judge. None = same as EXTRA_BODY
+# Extra request fields for the judge. None = send nothing extra.
+# (EXTRA_BODY above is NOT used for the judge: e.g. Qwen's thinking switch makes
+# Mistral models fail with "chat_template is not supported".)
 JUDGE_EXTRA_BODY = None
 
 # Frames the judge looks at per description

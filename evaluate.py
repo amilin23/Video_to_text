@@ -276,7 +276,9 @@ def judge_settings(settings_path: str | None = None) -> tuple[dict, str | None]:
 def make_judge(cfg: dict):
     from qwen_client import QwenClient
 
-    extra = cfg["judge_extra_body"] if cfg.get("judge_extra_body") is not None else cfg["extra_body"]
+    # Only the judge's own extra fields: the app's EXTRA_BODY (e.g. Qwen's thinking switch)
+    # can be rejected by other model families.
+    extra = cfg.get("judge_extra_body") or {}
     return QwenClient(cfg.get("judge_base_url") or cfg["base_url"], cfg.get("judge_model") or cfg["model"],
                       api_key=os.environ.get("JUDGE_API_KEY") or os.environ.get("QWEN_API_KEY"),
                       max_side=cfg["max_side"], max_tokens=max(cfg["max_tokens"], 400),

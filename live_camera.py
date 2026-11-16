@@ -86,7 +86,7 @@ DEFAULTS: dict[str, Any] = {
     "display": True,
     "window_width": 1280,
     "max_runtime": 0.0,
-    # The AI judge used by evaluate.py. None = the same server / model / extra fields as above.
+    # The AI judge used by evaluate.py. None = the same server / model as above; no extra fields.
     "judge_base_url": None,
     "judge_model": None,
     "judge_extra_body": None,
