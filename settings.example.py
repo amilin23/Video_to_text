@@ -89,6 +89,21 @@ MAX_SIDE = 640
 JPEG_QUALITY = 80
 
 
+# ------------------------------------------------------------ unchanged scenes
+
+# Don't ask again when the picture looks the same as the last frames that were sent.
+# Saves requests when nothing happens. In full mode the previous description is reused.
+SKIP_UNCHANGED = True
+
+# How different the picture must be to count as changed: average difference per
+# pixel, 0-255. Raise it if a shaky camera still sends too often; lower it if
+# small changes (e.g. someone picking up a pen) are missed.
+CHANGE_THRESHOLD = 6
+
+# Ask again after this many seconds anyway, even if nothing seems to have changed
+MAX_SKIP_SECONDS = 30
+
+
 # ------------------------------------------------------------ live mode (FULL = False)
 
 # Seconds to wait after each answer before the next analysis. 0 = only when you press space

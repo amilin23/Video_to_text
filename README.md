@@ -141,6 +141,15 @@ Your recorded question goes to ElevenLabs, and the frames and question go to you
 - The overlay says which moment the current description is about, e.g. `Describes 0:12-0:13`,
   because answers arrive a few seconds after the frames were sent.
 
+## Unchanged scenes are not sent again
+
+When the picture looks the same as the last frames that were sent, the app doesn't
+ask again (`SKIP_UNCHANGED`). It compares tiny greyscale copies of the frames on your
+computer, so the check costs nothing. Live mode simply waits; full mode reuses the
+previous description and marks it `(unchanged, not sent)`. After `MAX_SKIP_SECONDS`
+it asks again anyway. Tune `CHANGE_THRESHOLD` if a shaky camera still sends too often
+(raise it) or small changes are missed (lower it).
+
 ## Whole-video summary
 
 In full mode (`FULL = True`), after every segment has been described, one more

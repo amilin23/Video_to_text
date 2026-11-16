@@ -72,3 +72,17 @@ def test_live_mode_subtitles_last_until_next_entry(tmp_path):
     text = srt.read_text()
     assert "00:00:01,000 --> 00:00:08,000" in text
     assert "00:00:08,000 --> 00:00:13,000" in text
+
+
+def test_scene_change_detects_real_changes_only():
+    from live_camera import scene_change, scene_signature
+    rng = np.random.default_rng(0)
+    still = [np.full((360, 640, 3), 120, dtype=np.uint8)] * 4
+    noisy = [np.clip(f.astype(int) + rng.integers(-3, 4, f.shape), 0, 255).astype(np.uint8) for f in still]
+    moved = [np.full((360, 640, 3), 120, dtype=np.uint8) for _ in range(4)]
+    for f in moved:
+        f[100:300, 200:500] = 255  # a bright object appears
+    base = scene_signature(still)
+    assert scene_change(scene_signature(noisy), base) < 6      # camera noise: unchanged
+    assert scene_change(scene_signature(moved), base) > 6      # new object: changed
+    assert scene_change(scene_signature(moved[:2]), base) > 6  # different frame counts still work

@@ -67,6 +67,9 @@ DEFAULTS: dict[str, Any] = {
     "full": False,
     "segment": 5.0,
     "summary": True,
+    "skip_unchanged": True,
+    "change_threshold": 6.0,
+    "max_skip_seconds": 30.0,
     "interval": 3.0,
     "frames": 4,
     "frame_gap": 0.5,
@@ -256,6 +259,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--yolo", nargs="?", const="yolov8n.pt", metavar="WEIGHTS",
                    help="live mode: also draw YOLO boxes and pass its labels to Qwen as hints "
                         "(needs: pip install ultralytics)")
+    p.add_argument("--skip-unchanged", action=on_off,
+                   help="don't send frames that look the same as the last ones sent")
+    p.add_argument("--change-threshold", type=float,
+                   help="how different (0-255) the picture must be to count as changed")
     p.add_argument("--yolo-fps", type=float, help="how many times per second YOLO runs (live mode)")
     p.add_argument("--yolo-confidence", type=float, help="only show YOLO guesses at least this sure (0-1)")
     p.add_argument("--log", help="append each analysis as a JSON line to this file "
@@ -389,15 +396,15 @@ class Results:
         self.entries: list[Entry] = []
 
     def add(self, result: Analysis, video_start: float | None = None,
-            video_end: float | None = None, srt_end: float | None = None) -> None:
+            video_end: float | None = None, srt_end: float | None = None, repeated: bool = False) -> None:
         if video_start is not None:
             label = f"{fmt_time(video_start)}-{fmt_time(video_end if video_end is not None else video_start)}"
         else:
             label = datetime.now().strftime("%H:%M:%S")
         objects = ", ".join(result.objects) or "-"
         indent = " " * (len(label) + 3)
-        print(f"[{label}] ({result.latency_s:.1f}s) Objects: {objects}\n{indent}{result.description}",
-              flush=True)
+        took = "unchanged, not sent" if repeated else f"{result.latency_s:.1f}s"
+        print(f"[{label}] ({took}) Objects: {objects}\n{indent}{result.description}", flush=True)
 
         if self.log_path:
             record = {
@@ -405,8 +412,10 @@ class Results:
                 "model": self.model,
                 "objects": result.objects,
                 "description": result.description,
-                "latency_s": round(result.latency_s, 2),
+                "latency_s": None if repeated else round(result.latency_s, 2),
             }
+            if repeated:
+                record["repeated"] = True
             if self.source is not None:
                 record["source"] = os.path.abspath(self.source) if os.path.isfile(self.source) else self.source
             if video_start is not None:
@@ -535,6 +544,19 @@ def draw_overlay(frame: np.ndarray, analysis: Analysis | None, status: str,
     cv2.putText(frame, status, (8, th + 6), font, 0.5, status_color, 1, cv2.LINE_AA)
 
 
+def scene_signature(frames: list[np.ndarray]) -> np.ndarray:
+    """A tiny greyscale version of the frames, for a cheap 'has anything changed?' check."""
+    return np.stack([cv2.resize(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), (32, 18), interpolation=cv2.INTER_AREA)
+                     for f in frames]).astype(np.float32)
+
+
+def scene_change(a: np.ndarray, b: np.ndarray) -> float:
+    """Average difference per pixel, 0 (identical) to 255. Compares the last frames if counts differ."""
+    if a.shape != b.shape:
+        a, b = a[-1:], b[-1:]
+    return float(np.abs(a - b).mean())
+
+
 def fit_for_display(frame: np.ndarray, max_width: int) -> np.ndarray:
     """Return a copy of the frame shrunk to fit a max_width x (max_width * 9/16) window.
 
@@ -636,6 +658,9 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
     skipped = 0
     frame = None
     video_pos: float | None = None
+    last_sent_sig: np.ndarray | None = None
+    last_sent_at = float("-inf")
+    unchanged_skips = 0
     asker = None            # created on the first press of V
     asker_error: str | None = None
     qa_until = 0.0           # keep the last answer on screen until this time
@@ -732,8 +757,15 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
             # Automatic runs wait for a full burst of frames; a key press uses what's there.
             due = (auto and not asking and len(buffer) == buffer.maxlen
                    and now - last_activity >= args.interval)
+            if due and not manual_requested and args.skip_unchanged and last_sent_sig is not None:
+                change = scene_change(scene_signature([b[1] for b in buffer]), last_sent_sig)
+                if change < args.change_threshold and now - last_sent_at < args.max_skip_seconds:
+                    due = False            # looks the same as last time: don't ask again
+                    last_activity = now    # check again after the next interval
+                    unchanged_skips += 1
             if (due or manual_requested) and buffer and not worker.busy:
                 frames = [b[1] for b in buffer]
+                last_sent_sig, last_sent_at = scene_signature(frames), now
                 span = buffer[-1][0] - buffer[0][0]
                 hints = sorted(set().union(*(b[3] for b in buffer)))
                 pending = (buffer[0][2], buffer[-1][2], now)
@@ -803,6 +835,8 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
             asker.wait(timeout=client.timeout_s)
     if skipped:
         print(f"Skipped {skipped} frames to keep the video at normal speed.", flush=True)
+    if unchanged_skips:
+        print(f"Didn't send {unchanged_skips} times because the picture hadn't changed.", flush=True)
     # Let an in-flight analysis finish so its answer isn't lost.
     if worker.busy:
         print("Waiting for the last analysis to finish...", flush=True)
@@ -876,6 +910,9 @@ def run_full(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
     # The latest answer, kept on screen (over its own frame) while the next segment is analysed.
     shown: tuple[np.ndarray, Analysis, str] | None = None
     parts: list[tuple[str, str]] = []  # (time range, description) for the summary
+    last_sig: np.ndarray | None = None
+    last_item: Analysis | None = None
+    last_sent_start = float("-inf")
     started = time.monotonic()
 
     try:
@@ -885,6 +922,13 @@ def run_full(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
             label = f"{fmt_time(seg_start)}-{fmt_time(seg_end)}"
 
             item: Analysis | Exception | None = None
+            sig = scene_signature(frames)
+            if (args.skip_unchanged and last_sig is not None and last_item is not None
+                    and scene_change(sig, last_sig) < args.change_threshold
+                    and seg_start - last_sent_start < args.max_skip_seconds):
+                # Looks the same as the last segment that was sent: reuse its description.
+                results.add(last_item, seg_start, seg_end, srt_end=seg_end, repeated=True)
+                continue
             for attempt in (1, 2):
                 worker.submit(frames, span, previous, None)
                 while worker.busy:
@@ -913,6 +957,7 @@ def run_full(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
             if isinstance(item, Analysis):
                 results.add(item, seg_start, seg_end, srt_end=seg_end)
                 parts.append((label, item.description))
+                last_sig, last_item, last_sent_start = sig, item, seg_start
                 previous = item.description if args.use_previous else None
                 if show:
                     base = fit_for_display(frames[-1], args.window_width)
