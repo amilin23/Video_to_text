@@ -29,8 +29,9 @@ def test_shipped_settings_load_and_are_valid():
     assert "base_url" not in settings and "model" not in settings
     assert settings["extra_body"] == {"enable_thinking": False,
                                       "chat_template_kwargs": {"enable_thinking": False}}
+    assert settings["log"] == "auto"
     for key, value in settings.items():
-        if key != "extra_body":
+        if key not in ("extra_body", "log"):
             assert value == live_camera.DEFAULTS[key], key
 
 

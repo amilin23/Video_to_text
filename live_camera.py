@@ -59,7 +59,8 @@ def load_env_files() -> None:
 
 # Built-in defaults. settings.py overrides these, and command-line options override both.
 DEFAULTS: dict[str, Any] = {
-    "source": "0",
+    "source": "choose",
+    "video_folder": "videos",
     "base_url": "http://localhost:11434/v1",
     "model": "qwen3-vl:8b",
     "full": False,
@@ -193,7 +194,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                                        "command-line options override it.")
     on_off = argparse.BooleanOptionalAction
     p.add_argument("--settings", help=f"settings file to use (default: {SETTINGS_NAME} in this folder)")
-    p.add_argument("--source", help="camera index (0 = default webcam) or a video file / stream URL")
+    p.add_argument("--source", help="'choose' = pick from a list, 0 = webcam, or a video file / stream URL "
+                                    "(a file name alone is looked up in the video folder)")
+    p.add_argument("--video-folder", help="folder listed when the source is 'choose'")
     p.add_argument("--base-url", help="OpenAI-compatible API base URL")
     p.add_argument("--model", help="model name as the server knows it")
     p.add_argument("--api-key", default=os.environ.get("QWEN_API_KEY"),
@@ -222,7 +225,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--yolo", nargs="?", const="yolov8n.pt", metavar="WEIGHTS",
                    help="live mode: also draw YOLO boxes and pass its labels to Qwen as hints "
                         "(needs: pip install ultralytics)")
-    p.add_argument("--log", help="append each analysis as a JSON line to this file")
+    p.add_argument("--log", help="append each analysis as a JSON line to this file "
+                                 "('auto' = results/<video>_<date-time>.jsonl)")
     p.add_argument("--srt", help="video files only: also save the descriptions as a subtitle file "
                                  "you can play alongside the video (e.g. in VLC)")
     p.add_argument("--display", action=on_off, help="show the video window (--no-display: print only)")
@@ -240,8 +244,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p.error("segment must be greater than 0")
     if not 1 <= args.jpeg_quality <= 100:
         p.error("jpeg_quality must be between 1 and 100")
-    if args.source.isdigit() and (args.full or args.srt):
-        p.error("full and srt need a video file as the source, not a camera")
     if args.full and args.yolo:
         p.error("yolo is only supported in live mode, not with full")
     return args
@@ -264,6 +266,73 @@ def srt_time(seconds: float) -> str:
     m, rem = divmod(rem, 60_000)
     s, ms = divmod(rem, 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+# ---------------------------------------------------------------- choosing the video
+
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
+
+
+def project_path(path: str) -> str:
+    """A relative path is taken from the project folder, wherever the app is started from."""
+    return path if os.path.isabs(path) else os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+
+
+def list_videos(folder: str) -> list[str]:
+    if not os.path.isdir(folder):
+        return []
+    return sorted((os.path.join(folder, name) for name in os.listdir(folder)
+                   if not name.startswith(".") and os.path.splitext(name)[1].lower() in VIDEO_EXTENSIONS),
+                  key=lambda path: os.path.basename(path).lower())
+
+
+def video_length(path: str) -> str:
+    cap = cv2.VideoCapture(path)
+    fps, frames = cap.get(cv2.CAP_PROP_FPS), cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    cap.release()
+    return fmt_time(frames / fps) if fps > 0 and frames > 0 else "?"
+
+
+def choose_source(folder: str) -> str:
+    """Show the videos in the folder as a numbered list and return the one picked ('0' = webcam)."""
+    videos = list_videos(folder)
+    print("\nChoose what to analyse:")
+    print("  0) Webcam")
+    width = max((len(os.path.basename(v)) for v in videos), default=0)
+    for i, video in enumerate(videos, 1):
+        print(f"  {i}) {os.path.basename(video):<{width}}   {video_length(video)}")
+    if not videos:
+        print(f"  (no videos yet: put .mp4 or .mov files in {folder})")
+    default = "1" if videos else "0"
+    while True:
+        try:
+            answer = input(f"Number (Enter = {default}, q = quit): ").strip().lower() or default
+        except EOFError:
+            sys.exit("No answer given. Set SOURCE in settings.py to a video file, or 0 for the webcam.")
+        if answer in ("q", "quit"):
+            sys.exit(0)
+        if answer.isdigit() and 0 <= int(answer) <= len(videos):
+            return "0" if answer == "0" else videos[int(answer) - 1]
+        print(f"Type a number from 0 to {len(videos)}.")
+
+
+def resolve_source(source: str, folder: str) -> str:
+    if source.strip().lower() in ("choose", "menu", "pick"):
+        return choose_source(folder)
+    if source.isdigit() or "://" in source or os.path.isfile(source):
+        return source
+    in_folder = os.path.join(folder, source)
+    return in_folder if os.path.isfile(in_folder) else source  # else VideoCapture reports it
+
+
+def auto_path(value: str | None, source: str, extension: str) -> str | None:
+    """'auto' -> results/<video name>_<date-time><extension>; anything else unchanged."""
+    if value is None or value.strip().lower() != "auto":
+        return value
+    folder = project_path("results")
+    os.makedirs(folder, exist_ok=True)
+    name = "webcam" if source.isdigit() else os.path.splitext(os.path.basename(source))[0]
+    return os.path.join(folder, f"{name}_{datetime.now():%Y%m%d-%H%M%S}{extension}")
 
 
 # ---------------------------------------------------------------- results output
@@ -675,18 +744,29 @@ def run_full(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
 def main() -> None:
     load_env_files()  # before parse_args, which reads QWEN_* defaults from the environment
     args = parse_args()
+    folder = project_path(args.video_folder)
+    args.source = resolve_source(args.source, folder)
     is_camera = args.source.isdigit()
+    if is_camera and (args.full or args.srt):
+        sys.exit("FULL and SRT need a video file, not the webcam. Pick a video, or set FULL = False and SRT = None.")
+    args.log = auto_path(args.log, args.source, ".jsonl")
+    args.srt = auto_path(args.srt, args.source, ".srt")
     cap = cv2.VideoCapture(int(args.source) if is_camera else args.source)
     if not cap.isOpened():
         sys.exit(f"Could not open video source {args.source!r}. "
                  + ("Check the camera is connected and not used by another app." if is_camera
-                    else "Check the file path is correct."))
+                    else f"Check the file path, or put the video in {folder}."))
 
     client = QwenClient(args.base_url, args.model, api_key=args.api_key, max_side=args.max_side,
                         max_tokens=args.max_tokens, temperature=args.temperature,
                         timeout_s=args.timeout, extra_body=args.extra_body,
                         system_prompt=args.system_prompt, jpeg_quality=args.jpeg_quality)
     print(f"Settings: {args.settings or 'built-in defaults (no ' + SETTINGS_NAME + ' found)'}", flush=True)
+    print(f"Video:    {'webcam ' + args.source if is_camera else os.path.basename(args.source)}", flush=True)
+    if args.log:
+        print(f"Log:      {args.log}", flush=True)
+    if args.srt:
+        print(f"Subtitles: {args.srt}", flush=True)
     warning = client.check_server()
     if warning:
         print(f"Warning: {warning}", file=sys.stderr)

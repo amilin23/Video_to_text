@@ -13,8 +13,13 @@
 
 # ------------------------------------------------------------ input
 
-# 0 = default webcam, 1 = second camera, or a video file, e.g. 'C:/videos/clip.mp4'
-SOURCE = 0
+# 'choose' = show a numbered list of the videos in VIDEO_FOLDER (and the webcam) and pick one
+# 0 = default webcam, 1 = second camera
+# or one video: a file name in VIDEO_FOLDER, e.g. 'walking.mp4', or a full path, e.g. 'C:/videos/clip.mp4'
+SOURCE = 'choose'
+
+# Folder with your test videos (.mp4, .mov, .avi, .mkv, .webm). Relative to the project folder.
+VIDEO_FOLDER = 'videos'
 
 # True  = analyse every part of a video file, 5 seconds at a time (video files only)
 # False = live mode: play in real time and analyse a recent burst every few seconds
@@ -104,8 +109,11 @@ DISPLAY = True
 # The window is shrunk to fit this width so the text stays on screen. 0 = original size
 WINDOW_WIDTH = 1280
 
-# Save every result to this file, one JSON line each. None = off, e.g. 'results.jsonl'
-LOG = None
+# Save every result, one JSON line each. Use this file with evaluate.py.
+# 'auto' = a new file per run: results/<video name>_<date-time>.jsonl
+# None = off, or a file name, e.g. 'results.jsonl' (adds to the end of the file)
+LOG = 'auto'
 
-# Save descriptions as a subtitle file (video files only). None = off, e.g. 'video.srt'
+# Save descriptions as a subtitle file (video files only).
+# 'auto' = results/<video name>_<date-time>.srt, None = off, or a file name
 SRT = None

@@ -5,3 +5,6 @@ venv/
 *.jsonl
 *.pt
 .env
+videos/*
+!videos/README.md
+results/

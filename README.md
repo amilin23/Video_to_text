@@ -57,6 +57,25 @@ python live_camera.py --base-url http://localhost:8000/v1 --model Qwen/Qwen3.8-2
 
 Keys: **space** analyse now · **a** toggle automatic analysis · **q** quit.
 
+## Choosing a video
+
+Put your test videos in the **`videos/`** folder. With `SOURCE = 'choose'` (the default
+in `settings.py`), the app lists them when it starts:
+
+```
+Choose what to analyse:
+  0) Webcam
+  1) desk.mp4      0:26
+  2) walking.mp4   0:25
+Number (Enter = 1, q = quit):
+```
+
+You can also skip the list: `--source walking.mp4` (a file name in `videos/`), `--source 0`
+for the webcam, or a full path. Videos in `videos/` are not committed to git.
+
+With `LOG = 'auto'`, every run is saved to its own file, `results/<video>_<date-time>.jsonl`,
+ready for `evaluate.py`.
+
 ## Video files
 
 ### Play and sample (like the camera)
