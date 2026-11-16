@@ -20,6 +20,7 @@ import json
 import math
 import os
 import queue
+import shutil
 import sys
 import textwrap
 import threading
@@ -65,6 +66,7 @@ DEFAULTS: dict[str, Any] = {
     "model": "qwen3-vl:8b",
     "full": False,
     "segment": 5.0,
+    "summary": True,
     "interval": 3.0,
     "frames": 4,
     "frame_gap": 0.5,
@@ -77,6 +79,8 @@ DEFAULTS: dict[str, Any] = {
     "system_prompt": SYSTEM_PROMPT,
     "extra_body": None,
     "yolo": None,
+    "yolo_fps": 5.0,
+    "yolo_confidence": 0.5,
     "log": None,
     "srt": None,
     "display": True,
@@ -95,18 +99,29 @@ def find_settings(explicit: str | None) -> str | None:
         if not os.path.isfile(explicit):
             sys.exit(f"Settings file not found: {explicit}")
         return explicit
-    for folder in (os.getcwd(), os.path.dirname(os.path.abspath(__file__))):
+    project = os.path.dirname(os.path.abspath(__file__))
+    for folder in (os.getcwd(), project):
         path = os.path.join(folder, SETTINGS_NAME)
         if os.path.isfile(path):
             return path
+    # First run: create settings.py from the template. It's yours from then on (git ignores it).
+    template = os.path.join(project, "settings.example.py")
+    if os.path.isfile(template):
+        path = os.path.join(project, SETTINGS_NAME)
+        shutil.copyfile(template, path)
+        print(f"Created {path} from settings.example.py. Edit settings.py to change settings.", flush=True)
+        return path
     return None
 
 
 def load_settings(path: str) -> dict[str, Any]:
     """Run settings.py and collect its UPPERCASE names, e.g. FRAMES = 4 -> frames."""
+    import importlib.machinery
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("_video_to_text_settings", path)
+    # An explicit loader, so the file is read as Python whatever its name ends in.
+    loader = importlib.machinery.SourceFileLoader("_video_to_text_settings", path)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(module)
@@ -205,6 +220,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="video files only: analyse every part of the video, segment by segment, "
                         "as fast as the model answers (instead of sampling while it plays)")
     p.add_argument("--segment", type=float, help="--full mode: seconds per analysed segment")
+    p.add_argument("--summary", action=on_off, help="--full mode: write a short summary of the whole video at the end")
     p.add_argument("--interval", type=float,
                    help="live mode: seconds to wait after each answer before the next automatic "
                         "analysis (0 = only analyse when you press space)")
@@ -225,6 +241,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--yolo", nargs="?", const="yolov8n.pt", metavar="WEIGHTS",
                    help="live mode: also draw YOLO boxes and pass its labels to Qwen as hints "
                         "(needs: pip install ultralytics)")
+    p.add_argument("--yolo-fps", type=float, help="how many times per second YOLO runs (live mode)")
+    p.add_argument("--yolo-confidence", type=float, help="only show YOLO guesses at least this sure (0-1)")
     p.add_argument("--log", help="append each analysis as a JSON line to this file "
                                  "('auto' = results/<video>_<date-time>.jsonl)")
     p.add_argument("--srt", help="video files only: also save the descriptions as a subtitle file "
@@ -459,7 +477,7 @@ def ascii_text(text: str) -> str:
 
 def draw_overlay(frame: np.ndarray, analysis: Analysis | None, status: str,
                  status_color: tuple[int, int, int],
-                 placeholder: str = "Waiting for the first analysis...") -> None:
+                 placeholder: str = "Waiting for the first analysis...", about: str | None = None) -> None:
     h, w = frame.shape[:2]
     font, scale, thickness = cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1
     line_h = 22
@@ -468,7 +486,7 @@ def draw_overlay(frame: np.ndarray, analysis: Analysis | None, status: str,
     if analysis is None:
         lines = [placeholder]
     else:
-        lines = []
+        lines = [about] if about else []
         if analysis.objects:
             lines += textwrap.wrap("Objects: " + ", ".join(analysis.objects), wrap_at)
         lines += textwrap.wrap(analysis.description, wrap_at) or [""]
@@ -509,35 +527,62 @@ def quit_pressed(delay_ms: int = 1) -> bool:
 
 # ---------------------------------------------------------------- live mode
 
+def run_yolo(yolo, frame: np.ndarray, confidence: float) -> list[tuple[int, int, int, int, str, float]]:
+    """Detections as (x1, y1, x2, y2, label, confidence)."""
+    res = yolo(frame, conf=confidence, verbose=False)[0]
+    out = []
+    for (x1, y1, x2, y2), c, p in zip(res.boxes.xyxy.tolist(), res.boxes.cls.tolist(), res.boxes.conf.tolist()):
+        out.append((int(x1), int(y1), int(x2), int(y2), res.names[int(c)], float(p)))
+    return out
+
+
+def draw_boxes(frame: np.ndarray, detections) -> None:
+    thickness = max(2, frame.shape[1] // 400)
+    scale = max(0.5, frame.shape[1] / 1600)
+    for x1, y1, x2, y2, label, conf in detections:
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 255), thickness)
+        text = f"{label} {conf:.2f}"
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
+        cv2.rectangle(frame, (x1, max(0, y1 - th - 8)), (x1 + tw + 8, y1), (0, 200, 255), -1)
+        cv2.putText(frame, text, (x1 + 4, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 1, cv2.LINE_AA)
+
+
 def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient,
              results: Results, is_camera: bool) -> None:
     """Show the camera / video in real time and analyse a recent burst of frames every few seconds."""
     yolo = load_yolo(args.yolo) if args.yolo else None
     worker = AnalysisWorker(client)
 
-    # For video files: play at real speed, and know each frame's position in the video.
+    # Video files: play at real speed and time everything by the position in the video,
+    # skipping frames when processing falls behind (no slow motion). Cameras: wall-clock time.
     file_fps = 0.0 if is_camera else cap.get(cv2.CAP_PROP_FPS)
 
-    # Each entry: (wall-clock time, frame, position in the video in seconds or None).
-    buffer: deque[tuple[float, np.ndarray, float | None]] = deque(maxlen=args.frames)
+    # Each entry: (time in seconds, frame, position in the video or None, YOLO labels at that moment).
+    buffer: deque[tuple[float, np.ndarray, float | None, frozenset[str]]] = deque(maxlen=args.frames)
     current: Analysis | None = None
+    current_span: tuple[float | None, float | None] = (None, None)
+    current_sent_at = 0.0
     error: str | None = None
-    pending_span: tuple[float | None, float | None] = (None, None)
-    yolo_labels: list[str] = []
+    pending: tuple[float | None, float | None, float] = (None, None, 0.0)
+    detections: list = []
+    last_yolo = float("-inf")
     auto = args.interval > 0
     manual_requested = False
-    last_sample = last_activity = float("-inf")
+    last_sample = float("-inf")
+    last_activity = float("-inf")
     started = time.monotonic()
     frame_index = 0
+    skipped = 0
 
     def handle(item: Analysis | Exception) -> None:
-        nonlocal current, error
+        nonlocal current, error, current_span, current_sent_at
         if isinstance(item, Exception):
             error = str(item)
             print(f"Error: {error}", file=sys.stderr, flush=True)
         else:
             current, error = item, None
-            results.add(item, *pending_span)
+            current_span, current_sent_at = (pending[0], pending[1]), pending[2]
+            results.add(item, *current_span)
 
     print(f"Using {args.model} at {args.base_url}. "
           + ("Press space to analyse, a for auto, q to quit." if args.display else "Ctrl+C to stop."),
@@ -545,6 +590,13 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
 
     try:
         while True:
+            if file_fps > 0:
+                # Behind schedule? Skip frames (grab() avoids the colour conversion) to catch up.
+                behind = int((time.monotonic() - started) * file_fps) - frame_index
+                while behind > 1 and cap.grab():
+                    frame_index += 1
+                    skipped += 1
+                    behind -= 1
             ok, frame = cap.read()
             if not ok:
                 if is_camera:
@@ -559,16 +611,16 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
                 if ahead > 0:
                     time.sleep(ahead)
                     now = time.monotonic()
+            clock = video_pos if video_pos is not None else now
 
-            if now - last_sample >= args.frame_gap:
-                buffer.append((now, frame.copy(), video_pos))
-                last_sample = now
+            if yolo is not None and now - last_yolo >= 1 / max(args.yolo_fps, 0.1):
+                detections = run_yolo(yolo, frame, args.yolo_confidence)
+                last_yolo = now
 
-            display = frame
-            if yolo is not None:
-                res = yolo(frame, verbose=False)[0]
-                display = res.plot()
-                yolo_labels = sorted({res.names[int(c)] for c in res.boxes.cls})
+            if clock - last_sample >= args.frame_gap:
+                labels = frozenset(d[4] for d in detections)
+                buffer.append((clock, frame.copy(), video_pos, labels))
+                last_sample = clock
 
             for item in worker.drain():
                 last_activity = time.monotonic()
@@ -577,11 +629,12 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
             # Automatic runs wait for a full burst of frames; a key press uses what's there.
             due = auto and len(buffer) == buffer.maxlen and now - last_activity >= args.interval
             if (due or manual_requested) and buffer and not worker.busy:
-                frames = [f for _, f, _ in buffer]
+                frames = [b[1] for b in buffer]
                 span = buffer[-1][0] - buffer[0][0]
-                pending_span = (buffer[0][2], buffer[-1][2])
+                hints = sorted(set().union(*(b[3] for b in buffer)))
+                pending = (buffer[0][2], buffer[-1][2], now)
                 previous = current.description if current and args.use_previous else None
-                worker.submit(frames, span, previous, yolo_labels or None)
+                worker.submit(frames, span, previous, hints or None)
                 last_activity = now
                 manual_requested = False
 
@@ -597,8 +650,16 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
                 if video_pos is not None:
                     status = f"{fmt_time(video_pos)}  " + status
                 status += f"  |  auto {'on' if auto else 'off'}  [space] analyse  [a] auto  [q] quit"
+                display = frame.copy() if detections else frame
+                draw_boxes(display, detections)
                 display = fit_for_display(display, args.window_width)
-                draw_overlay(display, current, status, color)
+                if current is None:
+                    about = None
+                elif current_span[0] is not None:
+                    about = f"Describes {fmt_time(current_span[0])}-{fmt_time(current_span[1])}"
+                else:
+                    about = f"Describes the camera {now - current_sent_at:.0f} s ago"
+                draw_overlay(display, current, status, color, about=about)
                 cv2.imshow(WINDOW, display)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
@@ -614,6 +675,8 @@ def run_live(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
     except KeyboardInterrupt:
         pass
 
+    if skipped:
+        print(f"Skipped {skipped} frames to keep the video at normal speed.", flush=True)
     # Let an in-flight analysis finish so its answer isn't lost.
     if worker.busy:
         print("Waiting for the last analysis to finish...", flush=True)
@@ -686,6 +749,7 @@ def run_full(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
     previous: str | None = None
     # The latest answer, kept on screen (over its own frame) while the next segment is analysed.
     shown: tuple[np.ndarray, Analysis, str] | None = None
+    parts: list[tuple[str, str]] = []  # (time range, description) for the summary
     started = time.monotonic()
 
     try:
@@ -722,6 +786,7 @@ def run_full(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
 
             if isinstance(item, Analysis):
                 results.add(item, seg_start, seg_end, srt_end=seg_end)
+                parts.append((label, item.description))
                 previous = item.description if args.use_previous else None
                 if show:
                     base = fit_for_display(frames[-1], args.window_width)
@@ -737,6 +802,24 @@ def run_full(args: argparse.Namespace, cap: cv2.VideoCapture, client: QwenClient
     finally:
         elapsed = time.monotonic() - started
         print(f"Finished in {fmt_time(elapsed)}.", flush=True)
+    if args.summary and len(parts) >= 2:
+        write_summary(client, parts, args.log)
+
+
+def write_summary(client: QwenClient, parts: list[tuple[str, str]], log_path: str | None) -> None:
+    """One more request: turn all the segment descriptions into a short paragraph."""
+    print("Writing a summary of the whole video...", flush=True)
+    try:
+        text, latency = client.summarize(parts)
+    except Exception as exc:
+        print(f"Could not write the summary: {exc}", file=sys.stderr, flush=True)
+        return
+    print(f"\nSummary ({latency:.1f}s):\n" + textwrap.fill(text, 100) + "\n", flush=True)
+    if log_path:
+        path = os.path.splitext(log_path)[0] + "_summary.txt"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+        print(f"Summary saved to {path}", flush=True)
 
 
 # ---------------------------------------------------------------- entry point

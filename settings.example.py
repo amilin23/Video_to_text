@@ -1,5 +1,8 @@
 # Settings for live_camera.py
 #
+# This is the TEMPLATE. The app copies it to settings.py the first time it runs.
+# Edit settings.py, not this file: settings.py is yours and git never changes it.
+#
 # Change a value, save, and run:  python live_camera.py
 # A command-line option overrides a value here for one run, e.g.  python live_camera.py --frames 2
 #
@@ -58,11 +61,18 @@ USE_PREVIOUS = True
 
 # Instructions given to the model. The app still asks for the answer as JSON
 # with "objects" and "description", so keep it about describing frames.
+# The rules below keep answers short (good for CIDEr), stop claims about things that
+# aren't there, and keep object names consistent.
 SYSTEM_PROMPT = (
-    "You are a live camera assistant. You receive consecutive frames from a camera, "
-    "oldest first. Identify the main objects that are visible and explain what is "
-    "happening, including any movement or change between frames. Be concise and "
-    "only describe what you can actually see."
+    "You describe short clips of video. You receive a few frames from the clip, oldest first. "
+    "Rules: "
+    "1. Describe only what you can see in these frames. Never say what is absent or not "
+    "happening, such as 'no people' or 'nothing moves'. "
+    "2. Objects are things you could point at or pick up, such as a mug, a laptop or a person. "
+    "Do not list surfaces, walls, floors, shadows, light, the camera or the scene itself. "
+    "3. Use simple, common, singular names, and keep using the same name for the same object. "
+    "4. The description is ONE sentence of at most 25 words: what is happening, including "
+    "clear camera movement. If you are unsure what something is, say what it looks like."
 )
 
 
@@ -91,6 +101,13 @@ FRAME_GAP = 0.5
 # (needs: pip install ultralytics)
 YOLO = None
 
+# How many times per second YOLO runs. Its last boxes stay on screen in between.
+# Lower = smoother video on a slow computer
+YOLO_FPS = 5
+
+# Only show YOLO guesses (and pass them to Qwen) when it is at least this sure, 0 to 1
+YOLO_CONFIDENCE = 0.5
+
 # Stop after this many seconds. 0 = run until you quit
 MAX_RUNTIME = 0
 
@@ -99,6 +116,10 @@ MAX_RUNTIME = 0
 
 # Length of each analysed piece of video, in seconds
 SEGMENT = 5
+
+# After the whole video is analysed, write a short summary of it (one more request).
+# Saved next to the log as <log name>_summary.txt
+SUMMARY = True
 
 
 # ------------------------------------------------------------ output

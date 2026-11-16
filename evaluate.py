@@ -10,6 +10,8 @@ The answer key is a CSV with one row per stretch of video:
 
 - objects: the real objects, separated by ";". Write other accepted names with "|"
   (e.g. "mug|cup"), so the model isn't marked wrong for a different word.
+  Start a borderline object with "?" (e.g. "?table"): it doesn't count as missed if the
+  model leaves it out, and doesn't count as invented if the model lists it.
 - Lines starting with # are ignored.
 
 - what_happens: a reference description written by a person, used for CIDEr.
@@ -56,6 +58,7 @@ class Segment:
     end: float
     objects: list[list[str]]  # each real object = the names accepted for it
     happens: str
+    optional: list[list[str]] = None  # borderline objects: never missed, never invented
 
     @property
     def references(self) -> list[str]:
@@ -91,11 +94,13 @@ def load_key(path: str) -> list[Segment]:
             start, end = parse_time(row["start"]), parse_time(row["end"])
         except (KeyError, TypeError, ValueError) as exc:
             sys.exit(f"{path}, row {i}: {exc}. The header must be: start,end,objects,what_happens")
-        objects = [[name.strip() for name in item.split("|") if name.strip()]
-                   for item in (row.get("objects") or "").split(";")]
+        items = [item.strip() for item in (row.get("objects") or "").split(";") if item.strip()]
+        names = lambda item: [n.strip() for n in item.lstrip("?").split("|") if n.strip()]
+        objects = [names(i) for i in items if not i.startswith("?")]
+        optional = [names(i) for i in items if i.startswith("?")]
         # Commas in what_happens split it into extra columns; join them back together.
         happens = ",".join([row.get("what_happens") or ""] + (row.get(None) or [])).strip(", ")
-        segments.append(Segment(start, end, [o for o in objects if o], happens))
+        segments.append(Segment(start, end, [o for o in objects if o], happens, [o for o in optional if o]))
     if not segments:
         sys.exit(f"{path}: no rows found")
     return sorted(segments, key=lambda s: s.start)
@@ -259,7 +264,7 @@ def score(key: list[Segment], results: list[Result]) -> list[SegmentScore]:
         listed = unique([o for r in mine for o in r.objects])
         found = [real for real in seg.objects if any(same_object(p, real) for p in listed)]
         missed = [real for real in seg.objects if real not in found]
-        correct = [p for p in listed if any(same_object(p, real) for real in seg.objects)]
+        correct = [p for p in listed if any(same_object(p, real) for real in seg.objects + (seg.optional or []))]
         invented = [p for p in listed if p not in correct]
         scores.append(SegmentScore(seg, mine, found, missed, correct, invented))
     return scores

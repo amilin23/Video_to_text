@@ -17,16 +17,27 @@ import numpy as np
 import requests
 
 SYSTEM_PROMPT = (
-    "You are a live camera assistant. You receive consecutive frames from a "
-    "camera, oldest first. Identify the main objects that are visible and "
-    "explain what is happening, including any movement or change between "
-    "frames. Be concise and only describe what you can actually see."
+    "You describe short clips of video. You receive a few frames from the clip, oldest first. "
+    "Rules: "
+    "1. Describe only what you can see in these frames. Never say what is absent or not "
+    "happening, such as 'no people' or 'nothing moves'. "
+    "2. Objects are things you could point at or pick up, such as a mug, a laptop or a person. "
+    "Do not list surfaces, walls, floors, shadows, light, the camera or the scene itself. "
+    "3. Use simple, common, singular names, and keep using the same name for the same object. "
+    "4. The description is ONE sentence of at most 25 words: what is happening, including "
+    "clear camera movement. If you are unsure what something is, say what it looks like."
+)
+
+SUMMARY_PROMPT = (
+    "You summarise a video from timed descriptions of its parts. Write 3 to 5 sentences in plain "
+    "prose covering the main objects, what happens and in what order. Use only what the "
+    "descriptions say and do not add anything. Reply with the summary only."
 )
 
 RESPONSE_FORMAT = (
     "Reply with JSON only, no other text, in exactly this shape: "
-    '{"objects": ["short object names"], '
-    '"description": "1-2 sentences on what is happening"}'
+    '{"objects": ["mug", "pen"], '
+    '"description": "one sentence, at most 25 words"}'
 )
 
 
@@ -136,14 +147,12 @@ class QwenClient:
             raise ValueError("No frames to analyse")
 
         if len(frames) == 1:
-            intro = "Here is the current frame from a live camera."
+            intro = "Here is one frame from the video."
         else:
-            intro = (
-                f"Here are {len(frames)} frames from a live camera covering the "
-                f"last {span_s:.1f} seconds, oldest first."
-            )
+            intro = f"Here are {len(frames)} frames covering {span_s:.1f} seconds of video, oldest first."
         if previous:
-            intro += f" Your previous description was: {previous!r}. Mention what has changed, if anything."
+            intro += (f" The clip just before this one was described as: {previous!r}. "
+                      "Use the same names for the same objects, and describe what happens in these frames.")
         if detector_labels:
             intro += (
                 " An object detector also reported: "
@@ -168,6 +177,33 @@ class QwenClient:
             **self.extra_body,
         }
 
+        text, latency = self._chat(payload)
+        objects, description = parse_response(text)
+        if not description and not objects:
+            description = (
+                "(model returned no answer - try a higher --max-tokens or turn off thinking)"
+            )
+        return Analysis(objects=objects, description=description, latency_s=latency, raw=text)
+
+    def summarize(self, parts: Sequence[tuple[str, str]], max_tokens: int = 400) -> tuple[str, float]:
+        """Turn timed descriptions [(time range, description), ...] into one short paragraph."""
+        lines = "\n".join(f"[{when}] {description}" for when, description in parts)
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": SUMMARY_PROMPT},
+                {"role": "user", "content": f"Descriptions of the video, in order:\n{lines}"},
+            ],
+            "max_tokens": max(max_tokens, self.max_tokens),
+            "temperature": self.temperature,
+            **self.extra_body,
+        }
+        text, latency = self._chat(payload)
+        if "</think>" in text:
+            text = text.rsplit("</think>", 1)[1]
+        return text.strip(), latency
+
+    def _chat(self, payload: dict[str, Any]) -> tuple[str, float]:
         started = time.monotonic()
         try:
             r = self.session.post(
@@ -183,10 +219,4 @@ class QwenClient:
             text = r.json()["choices"][0]["message"].get("content") or ""
         except (ValueError, KeyError, IndexError) as exc:
             raise QwenError(f"Unexpected response: {r.text[:300]}") from exc
-
-        objects, description = parse_response(text)
-        if not description and not objects:
-            description = (
-                "(model returned no answer - try a higher --max-tokens or turn off thinking)"
-            )
-        return Analysis(objects=objects, description=description, latency_s=latency, raw=text)
+        return text, latency

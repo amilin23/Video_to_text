@@ -8,3 +8,4 @@ venv/
 videos/*
 !videos/README.md
 results/
+settings.py

@@ -81,3 +81,13 @@ def test_multiple_references_split_on_pipe(tmp_path):
                     encoding="utf-8")
     [seg] = load_key(str(path))
     assert seg.references == ["A mug, a spoon.", "A cup on a table."]
+
+
+def test_optional_objects_are_never_missed_or_invented(tmp_path):
+    key = tmp_path / "key.csv"
+    key.write_text("start,end,objects,what_happens\n0:00,0:05,mug; ?table|desk; ?shadow,x\n", encoding="utf-8")
+    text = tmp_path / "run.txt"
+    text.write_text("[0:01-0:02] (1.0s) Objects: mug, desk\n            A mug.\n", encoding="utf-8")
+    [seg] = score(load_key(str(key)), load_results(str(text))[0])
+    assert [o[0] for o in seg.found] == ["mug"] and seg.missed == []   # shadow not required
+    assert seg.correct == ["mug", "desk"] and seg.invented == []       # desk is accepted

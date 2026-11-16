@@ -6,7 +6,7 @@ import live_camera
 from live_camera import load_settings, parse_args
 from qwen_client import SYSTEM_PROMPT
 
-REPO_SETTINGS = Path(__file__).resolve().parent.parent / "settings.py"
+REPO_SETTINGS = Path(__file__).resolve().parent.parent / "settings.example.py"
 
 
 @pytest.fixture(autouse=True)
@@ -22,7 +22,7 @@ def write(tmp_path, text):
     return str(path)
 
 
-def test_shipped_settings_load_and_are_valid():
+def test_settings_template_loads_and_is_valid():
     settings = load_settings(str(REPO_SETTINGS))
     assert settings["system_prompt"] == SYSTEM_PROMPT
     # BASE_URL and MODEL are None in the shipped file, so .env decides them.
@@ -82,3 +82,17 @@ def test_bad_settings_give_clear_error(tmp_path, text, message):
     with pytest.raises(SystemExit) as exc:
         load_settings(path)
     assert message in str(exc.value)
+
+
+def test_first_run_copies_the_template(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "settings.example.py").write_text("FRAMES = 5\n", encoding="utf-8")
+    monkeypatch.setattr(live_camera, "__file__", str(project / "live_camera.py"))
+    path = live_camera.find_settings(None)
+    assert path == str(project / "settings.py")
+    assert (project / "settings.py").read_text(encoding="utf-8") == "FRAMES = 5\n"
+    # Second run uses the existing file and doesn't overwrite it.
+    (project / "settings.py").write_text("FRAMES = 2\n", encoding="utf-8")
+    assert live_camera.find_settings(None) == str(project / "settings.py")
+    assert (project / "settings.py").read_text(encoding="utf-8") == "FRAMES = 2\n"

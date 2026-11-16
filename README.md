@@ -113,6 +113,22 @@ the video in VLC (or most players) and add the subtitle file
 then see each description while the matching part of the video plays, which
 makes it easy to spot mistakes.
 
+## How live mode keeps up
+
+- Video files are timed by the position in the video. If processing falls behind
+  (for example with YOLO on a slow computer), frames are skipped so the video keeps
+  playing at normal speed instead of in slow motion.
+- YOLO runs a few times per second (`YOLO_FPS`), not on every frame.
+- The overlay says which moment the current description is about, e.g. `Describes 0:12-0:13`,
+  because answers arrive a few seconds after the frames were sent.
+
+## Whole-video summary
+
+In full mode (`FULL = True`), after every segment has been described, one more
+request turns all the descriptions into a 3-5 sentence summary of the whole video.
+It is printed and saved next to the log as `<log name>_summary.txt`. Turn it off
+with `SUMMARY = False`.
+
 ## Command-line options
 
 Each one matches a setting in `settings.py` (`--frame-gap` = `FRAME_GAP`).
@@ -128,6 +144,9 @@ Each one matches a setting in `settings.py` (`--frame-gap` = `FRAME_GAP`).
 | `--frame-gap` | `0.5` | Live: seconds between those frames |
 | `--max-side` | `640` | Frames are downscaled to this size before sending (smaller = faster) |
 | `--yolo [weights]` | off | Also draw YOLO boxes live and pass its labels to Qwen as hints (`pip install ultralytics`, AGPL-3.0) |
+| `--yolo-fps` | `5` | How many times per second YOLO runs; its boxes stay on screen in between |
+| `--yolo-confidence` | `0.5` | Only show YOLO guesses (and pass them to Qwen) when it is at least this sure |
+| `--summary` / `--no-summary` | on | Full mode: write a short summary of the whole video at the end |
 | `--log out.jsonl` | off | Save every result as a JSON line (with video times for files) |
 | `--srt out.srt` | off | Video files: save descriptions as subtitles |
 | `--no-display` | off | No window, just print results |
@@ -136,7 +155,10 @@ Each one matches a setting in `settings.py` (`--frame-gap` = `FRAME_GAP`).
 ## Settings (`settings.py`)
 
 All settings are in **`settings.py`**, a plain Python file with a comment
-explaining each one. Change a value, save, and run `python live_camera.py`.
+explaining each one. The first time you run the app, it creates `settings.py`
+from the template `settings.example.py`. Your `settings.py` is not tracked by git,
+so `git pull` never changes it or conflicts with it. To pick up new settings after
+an update, compare it with `settings.example.py`. Change a value, save, and run `python live_camera.py`.
 For example, to analyse a whole video file with 2 frames per 10-second piece:
 
 ```python
@@ -179,11 +201,13 @@ Score a run against an answer key you write by hand: how close the descriptions
 are (CIDEr), what the model found, missed and invented, plus speed and coverage.
 
 1. Write an answer key per stretch of video (see `eval/object_video_key.csv`):
-   - `objects`: real objects separated by `;`, other accepted names by `|` (e.g. `mug|cup`)
+   - `objects`: real objects separated by `;`, other accepted names by `|` (e.g. `mug|cup`).
+     A `?` in front marks a borderline object (e.g. `?table`): never counted as missed or invented.
    - `what_happens`: reference descriptions for CIDEr, separated by `|`, in double quotes.
      Write 1-2 full sentences, about as long as the model's descriptions:
      CIDEr punishes length differences heavily.
-2. Run the app with `LOG = 'run1.jsonl'` in `settings.py` (or copy the terminal output into a `.txt`).
+2. Run the app (with `LOG = 'auto'`, the default, each run is saved in `results/`),
+   or copy the terminal output into a `.txt`.
 3. Score it:
 
 ```bash
