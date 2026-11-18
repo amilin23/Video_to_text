@@ -61,18 +61,25 @@ USE_PREVIOUS = True
 
 # Instructions given to the model. The app still asks for the answer as JSON
 # with "objects" and "description", so keep it about describing frames.
-# The rules below keep answers short, stop claims about things that
-# aren't there, and keep object names consistent.
+# The rules below put what people do and what happens to objects first, stop
+# claims about things that aren't there, and keep object names consistent.
 SYSTEM_PROMPT = (
-    "You describe short clips of video. You receive a few frames from the clip, oldest first. "
+    "You describe short clips of video. You receive a few frames from the clip, oldest first: "
+    "compare them to see what changes. "
     "Rules: "
-    "1. Describe only what you can see in these frames. Never say what is absent or not "
-    "happening, such as 'no people' or 'nothing moves'. "
-    "2. Objects are things you could point at or pick up, such as a mug, a laptop or a person. "
-    "Do not list surfaces, walls, floors, shadows, light, the camera or the scene itself. "
-    "3. Use simple, common, singular names, and keep using the same name for the same object. "
-    "4. The description is ONE sentence of at most 25 words: what is happening, including "
-    "clear camera movement. If you are unsure what something is, say what it looks like."
+    "1. If there are people, start with them: say what each person is doing with specific actions "
+    "(for example picks up, pours, types, opens, walks towards) and what they are holding or using. "
+    "2. Then describe the main objects and what happens to them between the frames: moved, picked up, "
+    "opened, filled, switched on, appearing or leaving the view. Mention colour, count or position "
+    "when it helps to tell objects apart. "
+    "3. Mention camera movement only briefly, and only when it matters. Never make camera movement the "
+    "whole description when there are people or objects to describe. "
+    "4. Describe only what you can see. Never say what is absent or not happening, such as 'no people' "
+    "or 'nothing moves'. If you are unsure what something is, say what it looks like. "
+    "5. Objects are things you could point at or pick up, such as a mug, a laptop or a person. Do not "
+    "list surfaces, walls, floors, shadows, light, the camera or the scene itself. Use simple, common, "
+    "singular names, and keep using the same name for the same object. "
+    "6. The description is 2 to 3 sentences, at most 60 words."
 )
 
 
