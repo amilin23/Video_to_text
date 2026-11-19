@@ -1,7 +1,6 @@
 """Client for a Qwen vision-language model served behind an OpenAI-compatible API.
 
-Works with Ollama (http://localhost:11434/v1), vLLM (http://localhost:8000/v1),
-LM Studio, or any other server that implements /v1/chat/completions with images.
+Works with any provider that implements /v1/chat/completions with images.
 """
 
 from __future__ import annotations
@@ -151,8 +150,8 @@ class QwenClient:
             ids = [m.get("id") for m in r.json().get("data", [])]
         except (requests.RequestException, ValueError) as exc:
             return (
-                f"Could not reach a model server at {self.base_url} ({exc}). "
-                "Is Ollama / vLLM / LM Studio running?"
+                f"Could not reach the model provider at {self.base_url} ({exc}). "
+                "Check QWEN_BASE_URL and QWEN_MODEL in your .env."
             )
         if ids and self.model not in ids:
             return f"Model {self.model!r} not found on the server. Available: {', '.join(ids)}"

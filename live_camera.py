@@ -1,6 +1,6 @@
 """Camera or video -> Qwen vision model: detect objects and explain what is happening.
 
-Usage (with Ollama running qwen3-vl:8b):
+Usage (with a Qwen vision provider configured in .env):
     python live_camera.py                                  # live webcam
     python live_camera.py --source video.mp4               # play a video, sample it as it plays
     python live_camera.py --source video.mp4 --full --srt out.srt
@@ -62,8 +62,8 @@ def load_env_files() -> None:
 DEFAULTS: dict[str, Any] = {
     "source": "choose",
     "video_folder": "videos",
-    "base_url": "http://localhost:11434/v1",
-    "model": "qwen3-vl:8b",
+    "base_url": None,
+    "model": None,
     "full": False,
     "segment": 5.0,
     "summary": True,
@@ -230,8 +230,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--source", help="'choose' = pick from a list, 0 = webcam, or a video file / stream URL "
                                     "(a file name alone is looked up in the video folder)")
     p.add_argument("--video-folder", help="folder listed when the source is 'choose'")
-    p.add_argument("--base-url", help="OpenAI-compatible API base URL")
-    p.add_argument("--model", help="model name as the server knows it")
+    p.add_argument("--base-url", help="your provider's OpenAI-compatible API base URL "
+                                      "(default: QWEN_BASE_URL in .env)")
+    p.add_argument("--model", help="model name as your provider knows it "
+                                   "(default: QWEN_MODEL in .env)")
     p.add_argument("--api-key", default=os.environ.get("QWEN_API_KEY"),
                    help="API key (better: QWEN_API_KEY in .env)")
     p.add_argument("--full", action=on_off,
@@ -254,7 +256,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="send the previous description so the model can say what changed")
     p.add_argument("--system-prompt", help="instructions given to the model")
     p.add_argument("--extra-body", type=json.loads,
-                   help='extra JSON fields for the request, e.g. for vLLM: '
+                   help='extra JSON fields for the request, e.g. to turn off thinking: '
                         '\'{"chat_template_kwargs": {"enable_thinking": false}}\'')
     p.add_argument("--yolo", nargs="?", const="yolov8n.pt", metavar="WEIGHTS",
                    help="live mode: also draw YOLO boxes and pass its labels to Qwen as hints "
@@ -278,6 +280,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = p.parse_args(argv)
     args.settings = config_path
 
+    if not args.base_url or not args.model:
+        p.error("No provider configured. Set QWEN_BASE_URL and QWEN_MODEL in .env "
+                 "(or BASE_URL / MODEL in settings.py, or --base-url / --model).")
     if args.frames < 1:
         p.error("frames must be at least 1")
     if args.segment <= 0:

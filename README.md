@@ -23,25 +23,19 @@ request also includes the previous description, so the model can say what change
 pip install -r requirements.txt
 ```
 
-## 2. Run a Qwen vision model
+## 2. Configure your Qwen provider
 
-Any server with an OpenAI-compatible `/v1/chat/completions` endpoint that accepts
-images works. Two common options:
+This app talks to a Qwen vision-language model through any provider with an
+OpenAI-compatible `/v1/chat/completions` endpoint that accepts images. Put your
+provider's details in **`.env`** in the project folder:
 
-**Ollama (easiest, default):**
-
-```bash
-ollama pull qwen3-vl:8b      # or qwen3-vl:4b for smaller GPUs
+```
+QWEN_API_KEY=your-key-here
+QWEN_BASE_URL=https://your-provider.example/api/v1
+QWEN_MODEL=the-model-name-your-provider-uses
 ```
 
-**vLLM (e.g. for Qwen3.8-27B, needs a large GPU):**
-
-```bash
-vllm serve Qwen/Qwen3.8-27B --port 8000
-```
-
-If vLLM complains about the number of images per prompt, add
-`--limit-mm-per-prompt '{"image": 4}'`.
+See *API key (`.env`)* below for details.
 
 ## 3. Start the camera (or see *Video files* below)
 
@@ -49,10 +43,10 @@ If vLLM complains about the number of images per prompt, add
 python live_camera.py
 ```
 
-With vLLM instead of Ollama:
+To use a different provider or model for one run, without touching `.env`:
 
 ```bash
-python live_camera.py --base-url http://localhost:8000/v1 --model Qwen/Qwen3.8-27B
+python live_camera.py --base-url https://another-provider.example/api/v1 --model some-model
 ```
 
 Keys: **space** analyse now · **a** toggle automatic analysis · **q** quit.
@@ -178,7 +172,7 @@ Each one matches a setting in `settings.py` (`--frame-gap` = `FRAME_GAP`).
 | `--log out.jsonl` | off | Save every result as a JSON line (with video times for files) |
 | `--srt out.srt` | off | Video files: save descriptions as subtitles |
 | `--no-display` | off | No window, just print results |
-| `--extra-body JSON` | none | Extra request fields, e.g. turn off thinking on vLLM: `'{"chat_template_kwargs": {"enable_thinking": false}}'` |
+| `--extra-body JSON` | none | Extra request fields, e.g. to turn off thinking: `'{"chat_template_kwargs": {"enable_thinking": false}}'` |
 
 ## Settings (`settings.py`)
 
@@ -221,7 +215,7 @@ QWEN_API_KEY=your-key-here
 ```
 
 The app loads `.env` automatically. `.env` is in `.gitignore`, so your key is
-never committed. For a local Ollama / vLLM server you can leave it empty.
+never committed. If your provider doesn't require a key, leave it empty.
 
 ## Evaluating results (`evaluate.py`)
 
@@ -269,7 +263,7 @@ It shows how often the judge agrees with you, and whether it is more lenient or 
 
 ## Tips
 
-- **Slow answers?** Use a smaller model (`qwen3-vl:4b`), fewer `--frames`, or a smaller `--max-side`.
+- **Slow answers?** Use a smaller model, fewer `--frames`, or a smaller `--max-side`.
 - **Empty answers?** Thinking models can use up all their tokens on reasoning. Raise
   `--max-tokens` or turn thinking off (see `--extra-body`).
 - **Camera won't open?** Try `--source 1`, and close other apps that use the camera.
