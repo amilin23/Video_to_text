@@ -19,7 +19,7 @@
 # 'choose' = show a numbered list of the videos in VIDEO_FOLDER (and the webcam) and pick one
 # 0 = default webcam, 1 = second camera
 # or one video: a file name in VIDEO_FOLDER, e.g. 'walking.mp4', or a full path, e.g. 'C:/videos/clip.mp4'
-SOURCE = 'choose'
+SOURCE = '0'
 
 # Folder with your test videos (.mp4, .mov, .avi, .mkv, .webm). Relative to the project folder.
 VIDEO_FOLDER = 'videos'
