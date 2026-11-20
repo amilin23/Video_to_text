@@ -12,7 +12,6 @@ Keys in the window:
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import queue
@@ -27,6 +26,7 @@ import cv2
 import numpy as np
 
 from qwen_client import Analysis, QwenClient
+from config import parse_args
 
 WINDOW = "Qwen live camera"
 
