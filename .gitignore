@@ -7,6 +7,5 @@ venv/
 .env
 videos/*
 !videos/README.md
-!videos/sample_*
 results/
 settings.py
