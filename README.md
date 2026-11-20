@@ -1,283 +1,182 @@
-# Video to text: live camera + Qwen
+# Video to Text
 
-A rough prototype that watches your camera and uses a Qwen vision-language model
-to **list the objects it sees** and **explain what is happening**, shown live on
-the video and printed to the terminal.
+Watches a webcam or a video file and uses a Qwen vision model from a hosted
+provider to **list the objects in view** and **describe what is happening**:
+what people are doing and what happens to the objects. Results are shown on the
+video, printed in the terminal and saved to files.
+
+Questions about the video can also be **asked by voice**, with the answer spoken aloud.
 
 ```
-camera ──► keep the last few frames (e.g. 4 frames, 0.5 s apart)
-              │
-              ├──► window shows live video + latest description
-              │
-              └──► every few seconds, in the background:
-                     frames ──► Qwen (OpenAI-compatible API) ──► {"objects": [...], "description": "..."}
+video ──► a few frames every few seconds ──► Qwen (hosted provider) ──► objects + description
 ```
 
-Sending a short burst of frames, rather than a single one, lets the model
-describe motion ("a person picks up a cup") and not just a still scene. Each
-request also includes the previous description, so the model can say what changed.
+## Requirements
 
-## 1. Install
+- **Windows** with **Python 3.10 or newer**
+- From a Qwen provider: an **API key**, the **base URL** (ending in `/v1`)
+  and the **name of a vision model**
+- For voice questions (optional): an **ElevenLabs API key**, a microphone and **FFmpeg**
 
-```bash
+## Setup
+
+Run the following commands in PowerShell.
+
+**1. Get the project**
+
+```powershell
+git clone https://github.com/amilin23/Video_to_text.git
+```
+
+```powershell
+cd Video_to_text
+```
+
+Alternatively, download the ZIP from GitHub (**Code → Download ZIP**) and open the extracted folder.
+
+**2. Create and activate a virtual environment**
+
+```powershell
+python -m venv .venv
+```
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+The prompt then starts with `(.venv)`. Activate the environment again in every new PowerShell window.
+
+**3. Install the packages**
+
+```powershell
 pip install -r requirements.txt
 ```
 
-## 2. Run a Qwen vision model
+**4. Add the API keys**
 
-Any server with an OpenAI-compatible `/v1/chat/completions` endpoint that accepts
-images works. Two common options:
-
-**Ollama (easiest, default):**
-
-```bash
-ollama pull qwen3-vl:8b      # or qwen3-vl:4b for smaller GPUs
+```powershell
+copy .env.example .env
 ```
 
-**vLLM (e.g. for Qwen3.8-27B, needs a large GPU):**
+Open `.env` in a text editor and fill in the provider details:
 
-```bash
-vllm serve Qwen/Qwen3.8-27B --port 8000
+```
+QWEN_API_KEY=provider-api-key
+QWEN_BASE_URL=https://provider-address/v1
+QWEN_MODEL=model-name
+
+# Optional: only needed for voice questions
+ELEVENLABS_API_KEY=elevenlabs-api-key
 ```
 
-If vLLM complains about the number of images per prompt, add
-`--limit-mm-per-prompt '{"image": 4}'`.
+`.env` is excluded from git, so the keys are never uploaded.
+Without an ElevenLabs key, voice questions are switched off and everything else works normally.
 
-## 3. Start the camera (or see *Video files* below)
+**5. Install FFmpeg (only for voice questions)**
 
-```bash
+```powershell
+winget install Gyan.FFmpeg
+```
+
+## Usage
+
+**1. Add videos** (`.mp4`, `.mov`, `.avi`, `.mkv`, `.webm`) to the **`videos`** folder.
+A few sample videos (`sample_*.mp4`) are included.
+
+**2. Start the app**
+
+```powershell
 python live_camera.py
 ```
 
-With vLLM instead of Ollama:
+On the first run, this also creates `settings.py`.
 
-```bash
-python live_camera.py --base-url http://localhost:8000/v1 --model Qwen/Qwen3.8-27B
-```
-
-Keys: **space** analyse now · **a** toggle automatic analysis · **q** quit.
-
-## Choosing a video
-
-Put your test videos in the **`videos/`** folder. With `SOURCE = 'choose'` (the default
-in `settings.py`), the app lists them when it starts:
+**3. Choose a video** from the list, or `0` for the webcam:
 
 ```
 Choose what to analyse:
   0) Webcam
-  1) desk.mp4      0:26
-  2) walking.mp4   0:25
+  1) sample_action.mp4    0:26
+  2) sample_busy.mp4      0:25
 Number (Enter = 1, q = quit):
 ```
 
-You can also skip the list: `--source walking.mp4` (a file name in `videos/`), `--source 0`
-for the webcam, or a full path. Videos in `videos/` are not committed to git.
+**4. Controls** (click the video window first):
 
-With `LOG = 'auto'`, every run is saved to its own file, `results/<video>_<date-time>.jsonl`,
-ready for `evaluate.py`.
-
-## Video files
-
-### Play and sample (like the camera)
-
-```bash
-python live_camera.py --source my_video.mp4
-```
-
-The video plays at normal speed and a short burst is analysed every few
-seconds. Results show the **position in the video**, e.g. `[1:05-1:06]`. Parts
-of the video between analyses are not looked at.
-
-### Analyse the whole video (`--full`)
-
-```bash
-python live_camera.py --source my_video.mp4 --full --srt my_video.srt --log my_video.jsonl
-```
-
-The video is split into back-to-back segments (`--segment`, 5 s by default)
-and every segment is analysed in order, so nothing is skipped. It runs as fast
-as the model answers, not at playback speed: a 10-minute video is 120 segments,
-so at ~7 s per answer it takes about 14 minutes.
-
-```
-[0:00-0:05] (6.3s) Objects: menu panel, PLAY, OPTIONS
-            The main menu is shown and the highlight moves from QUIT to PLAY.
-[0:05-0:10] (7.1s) Objects: ...
-```
-
-### Check accuracy with subtitles (`--srt`)
-
-`--srt file.srt` saves every description as a subtitle at the right time. Open
-the video in VLC (or most players) and add the subtitle file
-(Subtitle > Add Subtitle File...), or give it the same name as the video. You
-then see each description while the matching part of the video plays, which
-makes it easy to spot mistakes.
-
-## Ask questions by voice (live mode)
-
-Press **V** in the video window, ask a question out loud (Malay or English), and press
-**V** again. The app sends your question to ElevenLabs speech-to-text, shows Qwen the
-latest frames with the question, and speaks the answer with ElevenLabs text-to-speech.
-A video file pauses while you ask, so the answer matches the scene.
-
-Setup:
-
-1. Put your ElevenLabs key in `.env`: `ELEVENLABS_API_KEY=...`
-2. `pip install sounddevice` (microphone and speaker)
-3. FFmpeg must be installed to play the answer (`winget install Gyan.FFmpeg`)
-
-Settings in `settings.py`: `VOICE_ID` (the speaking voice), `TTS_MODEL`, `STT_MODEL`,
-`VOICE_LANGUAGE`, `SPEAK_ANSWERS`, `MAX_QUESTION_SECONDS`, `PAUSE_WHILE_ASKING`.
-Questions and answers are saved next to the log as `<log name>_questions.txt`.
-
-Your recorded question goes to ElevenLabs, and the frames and question go to your Qwen server.
-
-## How live mode keeps up
-
-- Video files are timed by the position in the video. If processing falls behind
-  (for example with YOLO on a slow computer), frames are skipped so the video keeps
-  playing at normal speed instead of in slow motion.
-- YOLO runs a few times per second (`YOLO_FPS`), not on every frame.
-- The overlay says which moment the current description is about, e.g. `Describes 0:12-0:13`,
-  because answers arrive a few seconds after the frames were sent.
-
-## Unchanged scenes are not sent again
-
-When the picture looks the same as the last frames that were sent, the app doesn't
-ask again (`SKIP_UNCHANGED`). It compares tiny greyscale copies of the frames on your
-computer, so the check costs nothing. Live mode simply waits; full mode reuses the
-previous description and marks it `(unchanged, not sent)`. After `MAX_SKIP_SECONDS`
-it asks again anyway. Tune `CHANGE_THRESHOLD` if a shaky camera still sends too often
-(raise it) or small changes are missed (lower it).
-
-## Whole-video summary
-
-In full mode (`FULL = True`), after every segment has been described, one more
-request turns all the descriptions into a 3-5 sentence summary of the whole video.
-It is printed and saved next to the log as `<log name>_summary.txt`. Turn it off
-with `SUMMARY = False`.
-
-## Command-line options
-
-Each one matches a setting in `settings.py` (`--frame-gap` = `FRAME_GAP`).
-
-
-| Option | Default | What it does |
-|---|---|---|
-| `--source` | `0` | Camera index, or a video file / stream URL |
-| `--full` | off | Video files: analyse every segment of the whole video |
-| `--segment` | `5` | `--full`: seconds per analysed segment |
-| `--interval` | `3` | Live: seconds to wait after each answer before the next one (`0` = only on space) |
-| `--frames` | `4` | Frames sent per analysis |
-| `--frame-gap` | `0.5` | Live: seconds between those frames |
-| `--max-side` | `640` | Frames are downscaled to this size before sending (smaller = faster) |
-| `--yolo [weights]` | off | Also draw YOLO boxes live and pass its labels to Qwen as hints (`pip install ultralytics`, AGPL-3.0) |
-| `--yolo-fps` | `5` | How many times per second YOLO runs; its boxes stay on screen in between |
-| `--yolo-confidence` | `0.5` | Only show YOLO guesses (and pass them to Qwen) when it is at least this sure |
-| `--summary` / `--no-summary` | on | Full mode: write a short summary of the whole video at the end |
-| `--log out.jsonl` | off | Save every result as a JSON line (with video times for files) |
-| `--srt out.srt` | off | Video files: save descriptions as subtitles |
-| `--no-display` | off | No window, just print results |
-| `--extra-body JSON` | none | Extra request fields, e.g. turn off thinking on vLLM: `'{"chat_template_kwargs": {"enable_thinking": false}}'` |
-
-## Settings (`settings.py`)
-
-All settings are in **`settings.py`**, a plain Python file with a comment
-explaining each one. The first time you run the app, it creates `settings.py`
-from the template `settings.example.py`. Your `settings.py` is not tracked by git,
-so `git pull` never changes it or conflicts with it. To pick up new settings after
-an update, compare it with `settings.example.py`. Change a value, save, and run `python live_camera.py`.
-For example, to analyse a whole video file with 2 frames per 10-second piece:
-
-```python
-SOURCE = 'C:/videos/clip.mp4'   # forward slashes for Windows paths
-FULL = True
-FRAMES = 2
-SEGMENT = 10
-SRT = 'clip.srt'
-```
-
-- Text goes in quotes, yes/no is `True` / `False`, and `None` means "use the default".
-- `BASE_URL = None` and `MODEL = None` use `QWEN_BASE_URL` / `QWEN_MODEL` from your `.env`.
-- A mistake gives a clear message: a typo like `FRAMS = 2` says *Did you mean FRAMES?*,
-  and a syntax error points to the line.
-
-Any command-line option overrides the file for that run only, e.g.
-`python live_camera.py --frames 6`. Use `--settings other_settings.py` to switch
-between saved setups. At startup the app prints which settings file it loaded.
-
-The order of priority is: command line > `settings.py` > environment / `.env` > built-in defaults.
-
-## API key (`.env`)
-
-The key does **not** go in `settings.py`. Copy the template and fill it in:
-
-```bash
-cp .env.example .env
-```
-
-```
-QWEN_API_KEY=your-key-here
-```
-
-The app loads `.env` automatically. `.env` is in `.gitignore`, so your key is
-never committed. For a local Ollama / vLLM server you can leave it empty.
-
-## Evaluating results (`evaluate.py`)
-
-Two ways to score a run, usable together:
-
-**1. AI judge (no answer key needed).** For every description in the log, the
-matching frames are taken from the video and sent to a judge model with the
-description. It scores each one 2 = correct, 1 = partly, 0 = wrong, and lists
-claims it can't see in the frames.
-
-```bash
-python evaluate.py results/desk_20261116-103542.jsonl --judge
-```
-
-Set the judge up in `settings.py` (`JUDGE_MODEL`, `JUDGE_BASE_URL`, `JUDGE_FRAMES`).
-Use a **different model** than the one being judged if you can: a model judging
-its own descriptions tends to be too lenient. A judge on another service with its
-own key reads `JUDGE_API_KEY` from `.env`.
-
-**2. Answer key (objects).** Write the real objects per stretch of video
-(see `eval/object_video_key.csv`): separated by `;`, other accepted names with `|`
-(e.g. `mug|cup`), and `?` in front of borderline objects (never counted as missed or invented).
-
-```bash
-python evaluate.py results/desk_20261116-103542.jsonl --key eval/my_object_key.csv
-```
-
-| Measure | Meaning |
+| Key | Action |
 |---|---|
-| Judge score | average of 0-2 over all descriptions |
-| Hallucination | share of descriptions with at least one claim the judge can't see |
-| Object recall | real objects found / real objects (low = misses things) |
-| Object precision | listed objects that are real / listed objects (low = invents things) |
-| Latency | seconds per answer |
-| Coverage | share of the video analysed (needs the LOG file and a key) |
+| **Space** | Analyse now |
+| **A** | Turn automatic analysis on or off |
+| **V** | Ask a question by voice: tap V, speak, tap V again |
+| **Q** | Quit |
 
-**Check the judge.** The judge's scores are saved to `<log>_judged.csv` with an
-empty `my_score` column. Score about 10 rows yourself (0, 1 or 2), then:
+## Modes
 
-```bash
-python evaluate.py --check results/desk_20261116-103542_judged.csv
-```
+Selected in `settings.py` with `FULL`:
 
-It shows how often the judge agrees with you, and whether it is more lenient or stricter.
+| | Live mode (`FULL = False`) | Full mode (`FULL = True`) |
+|---|---|---|
+| How it works | Plays the video in real time and describes it every few seconds | Describes every 5-second section of the video in order |
+| Coverage | Only the moments that are analysed | The whole video |
+| Speed | Real time | As fast as the model responds |
+| Extras | Voice questions, YOLO boxes | Summary of the whole video at the end |
+| Best for | Webcam, demos | Recorded videos |
 
-## Tips
+## Output
 
-- **Slow answers?** Use a smaller model (`qwen3-vl:4b`), fewer `--frames`, or a smaller `--max-side`.
-- **Empty answers?** Thinking models can use up all their tokens on reasoning. Raise
-  `--max-tokens` or turn thinking off (see `--extra-body`).
-- **Camera won't open?** Try `--source 1`, and close other apps that use the camera.
+All results are saved in the **`results`** folder, named after the video and the time of the run:
 
-## Tests
+| File | Contents |
+|---|---|
+| `<video>_<time>.jsonl` | Every description with its time in the video |
+| `<video>_<time>_summary.txt` | Summary of the whole video (full mode) |
+| `<video>_<time>_questions.txt` | Voice questions and their answers |
+| `<video>_<time>.srt` | Subtitles to play alongside the video (when `SRT = 'auto'`) |
 
-```bash
-pip install pytest
-pytest
-```
+## Configuration
 
+All settings are in **`settings.py`**, each with a comment explaining it. Change a
+value, save the file and run the app again. The most useful settings:
+
+| Setting | Description |
+|---|---|
+| `SOURCE` | `'choose'` = show the list, `0` = webcam, or a file name such as `'sample_busy.mp4'` |
+| `FULL` | `False` = live mode, `True` = full mode |
+| `SEGMENT` | Full mode: length of each section in seconds (default 5) |
+| `INTERVAL` | Live mode: seconds between analyses (default 3) |
+| `FRAMES` | Frames sent per analysis (default 4) |
+| `MAX_SIDE` | Size of the frames sent, in pixels (default 640); larger reads small text better but is slower |
+| `SYSTEM_PROMPT` | Instructions given to the model |
+| `EXTRA_BODY` | Provider-specific options, e.g. turning off Qwen's thinking for faster answers |
+| `MAX_TOKENS` | Maximum answer length; increase it if answers come back empty |
+| `SKIP_UNCHANGED` | Skip analysis when the picture has not changed (saves requests) |
+| `YOLO` | `'yolov8n.pt'` = also draw object boxes (live mode, requires `pip install ultralytics`) |
+| `VOICE_ID` | ElevenLabs voice used for spoken answers |
+| `LOG`, `SRT`, `SUMMARY` | Which result files are saved |
+
+Text values go in quotes, yes/no values are `True` / `False`, and Windows paths use
+forward slashes (`'C:/videos/clip.mp4'`). Mistakes produce a clear message, for
+example `unknown setting FRAMS. Did you mean FRAMES?`.
+
+`settings.py` is local and not tracked by git, so `git pull` never changes it. New
+settings added in an update appear in `settings.example.py` and can be copied into `settings.py`.
+
+## Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| `No API key` / `401` | Check `QWEN_API_KEY` in `.env` |
+| `Model '...' not found` | Check `QWEN_MODEL` in `.env`; the message lists the available models |
+| `Server returned 400` after changing `EXTRA_BODY` | The provider does not accept that option; remove it or set `EXTRA_BODY = None` |
+| Empty answers | Increase `MAX_TOKENS`, or turn off thinking in `EXTRA_BODY` |
+| Slow answers | Turn off thinking, or lower `FRAMES` or `MAX_SIDE` |
+| A video is missing from the list | Check that it is in the `videos` folder and ends in `.mp4`, `.mov`, `.avi`, `.mkv` or `.webm` |
+| Keys do not respond | Click the video window first, then press the key |
+| Camera does not open | Close other apps using the camera, or set `SOURCE = 1` |
+| `git pull` reports that local changes would be overwritten | Commit local changes first (`git add -A`, then `git commit -m "local changes"`), then run `git pull` |
+
+## Privacy
+
+Frames from the video are sent to the Qwen provider, and voice questions are sent
+to ElevenLabs. Only use videos that may be shared, and ask for permission before
+filming other people.
